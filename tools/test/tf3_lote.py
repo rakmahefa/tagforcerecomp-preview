@@ -5,11 +5,12 @@ The state is read with peek (no screenshots): life points, deck size, hand and m
 Results: gen/lote/<card id>/ (state.json, screenshots, the log), gen/lote/folha.png (contact sheet) and one PASS / FAIL line per case when --check is given.
 
 Usage:  python tools/test/tf3_lote.py [-j 8, never above 8: 10 pinned the CPU at 100%] [--mods gen/tf3sum] [--rot ativar|atacar|atacar_sim|<script>]
-            [--spec file.json | '{"6960": {...}}'] [--check "fim.me.deck < ini.me.deck"]... [--rapido] [--fn 09ebcce8,...] [--debug-fx] ID [ID ...]
+            [--spec file.json | '{"6960": {...}}'] [--check "fim.me.deck < ini.me.deck"]... [--grave auto|id,id,...] [--rapido] [--fn 09ebcce8,...] [--debug-fx] ID [ID ...]
   ID           TF3 card id (column 2 of ported.txt) forced into the hand
   --rot        a name of ROTEIROS or a tf.py script (words: X O RIGHT w60 shot:name estado:name ...)
   --spec       temporary effect specs for this run only (a JSON file or inline JSON, same shape as tools/mods/tf3_efeitos.json; {"effects": {...}, "stats": {...}} also accepted);
                every case gets its own pack folder (hard links), the project files are not touched
+  --grave      seed your Graveyard before the script: 'auto' = up to 3 original cards that match the card's spec filter, or a list of card ids
   --rapido     experimental fast mode (no screenshots): the duel is not the same as in full mode and the waits drift, so the script may not reach turn 3
   --check      python expression over the states ini and fim (attributes: me / op -> lp, deck, hand, n_hand, field); repeatable
                e.g. "fim.op.lp < ini.op.lp"  "fim.me.deck == ini.me.deck - 1"  "fim.me.n_hand > ini.me.n_hand"
@@ -36,6 +37,8 @@ PRE = "w300 O w60 RIGHT w20 RIGHT w20 RIGHT w20 X w2400 estado:ini shot:d1 DOWN 
 ROTEIROS = {
     # activate / summon the first hand card and look at the result
     'ativar': PRE + "X w100 shot:d3 X w200 shot:d4 w300 X w200 shot:d5 estado:fim",
+    # activate, then answer the selection prompts (OK, pick the first card offered, confirm) a few times; use with --grave auto for Graveyard effects
+    'ativar_sel': PRE + "X w100 shot:d3 X w200 shot:d4 X w400 shot:d5 X w300 shot:d6 X w300 shot:d7 estado:fim",
     # summon it, Battle Phase, attack the first target; stops at the "Activate the effect?" prompt if there is one
     'atacar': PRE + "X w300 O w60 RIGHT w20 X w100 X w100 X w100 X w700 shot:d3 estado:fim",
     # same, answers YES, picks the first card / position offered and lets the effect finish
@@ -123,8 +126,29 @@ def pacote_do_caso(cid, mods, spec):
     return os.path.relpath(dest, ROOT)
 
 
-def um(cid, mods, extra, rot, spec, checks, shots):
+def poke_cemiterio(cid, mods, spec, grave):
+    """--grave: script words that seed player 0's Graveyard (count at +20, ids at +0x710 of the player block). 'auto' = up to 3 original cards
+    that match the filter of the card's spec, otherwise a comma list of ids."""
+    if grave == 'auto':
+        import tf3_efeitos_param as P
+        rows = [l.split(' ', 3) for l in open(os.path.join(ROOT, mods, 'TF3Cards', 'ported.txt'), encoding='utf-8').read().splitlines() if l.strip()]
+        gids = {int(r[1]): int(r[0]) for r in rows}
+        e = ((spec or {}).get('effects') or {}).get(str(cid)) or json.load(open(os.path.join(ROOT, 'tools', 'mods', 'tf3_efeitos.json'), encoding='utf-8')).get(str(cid)) or {}
+        prop = P.propriedades(gids)
+        ids = sorted(i for i, p in prop.items() if i not in gids.values() and P.combina(p, e.get('filter', {'monster': True})))[:3]
+    else:
+        ids = [int(x) for x in grave.split(',')]
+    if not ids:
+        return ''
+    words = ['poke:%08x:%s' % (JOG + 20, struct.pack('<I', len(ids)).hex())]
+    words += ['poke:%08x:%s' % (JOG + 0x710 + 4 * k, struct.pack('<I', i).hex()) for k, i in enumerate(ids)]
+    return ' '.join(words) + ' '
+
+
+def um(cid, mods, extra, rot, spec, checks, shots, grave=None):
     tag = 'l%s' % cid
+    if grave:
+        rot = rot.replace('estado:ini', poke_cemiterio(cid, mods, spec, grave) + 'estado:ini', 1)
     if spec:
         mods = pacote_do_caso(cid, mods, spec)
     env = dict(os.environ, TF_TAG=tag, TF3_FORCE_CARDS=str(cid), TF3_FORCE_COPIES='3', TF3_FORCE_DECK='0', TF_MODS_FROM=mods, TF_RNG_SEED='1', **extra)   # fixed shuffle (CPUvsCPU plugin in the mods folder, switched off): the same duel every time
@@ -218,11 +242,11 @@ def main():
         extra['TF3_DEBUG_FN'] = a[a.index('--fn') + 1]; extra['TF3_DEBUG_FN_ALL'] = '1'
     if '--debug-fx' in a:
         extra['TF3_DEBUG_FX'] = '1'
-    skip = {'-j', '--mods', '--fn', '--rot', '--spec', '--check'}
+    skip = {'-j', '--mods', '--fn', '--rot', '--spec', '--check', '--grave'}
     ids = [x for i, x in enumerate(a) if x.isdigit() and (i == 0 or a[i - 1] not in skip)]
     falhas = 0
     with ThreadPoolExecutor(j) as ex:
-        for cid, estados, res in ex.map(lambda c: um(c, mods, extra, rot, spec, checks, shots), ids):
+        for cid, estados, res in ex.map(lambda c: um(c, mods, extra, rot, spec, checks, shots, opt('--grave')), ids):
             print('done', resumo(cid, estados), flush=True)
             for c, ok in res:
                 print('   %s  %s' % ('PASS' if ok else 'FAIL', c), flush=True); falhas += not ok
