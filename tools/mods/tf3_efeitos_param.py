@@ -94,12 +94,32 @@ def resolver(gids, spec=None):
 
 def resolver_gatilhos(gids, spec=None):
     """-> trigger.bin bytes: {card: donor} for the spec entries with "trigger_like" (the donor's id is used while the game asks whether the effect starts);
-    "trigger_event": "summon" also sets bit 15 of the donor: the alias holds while the game scans the events of a finished action (Summon triggers)"""
+    Donor flags: bit 15 = summon/post-action gate; bit 14 = battle gate;
+    bit 13 = native attack marker, end-of-Battle-Phase Defense and timed position lock."""
     if spec is None:
         spec = _carregar(SPEC_AUTO, SPEC)
-    pares = [(gids[int(k)], e["trigger_like"] | {"summon": 0x8000, "battle": 0x4000}.get(e.get("trigger_event"), 0)) for k, e in sorted(spec.items(), key=lambda x: int(x[0]))
+    pares = [(gids[int(k)], e["trigger_like"] | {"summon": 0x8000, "battle": 0x4000}.get(e.get("trigger_event"), 0) |
+              (0x2000 if e.get("after_attack_defense") else 0)) for k, e in sorted(spec.items(), key=lambda x: int(x[0]))
              if int(k) in gids and "trigger_like" in e]
-    return b"TF3T" + struct.pack("<I", len(pares)) + b"".join(struct.pack("<HH", a, b) for a, b in pares)
+    data = b"TF3T" + struct.pack("<I", len(pares)) + b"".join(struct.pack("<HH", a, b) for a, b in pares)
+    conditions = []
+    for key, rule in sorted(spec.items(), key=lambda x: int(x[0])):
+        if int(key) not in gids or not rule.get('trigger_condition'):
+            continue
+        unknown = set(rule['trigger_condition']) - {'destroyed', 'by_effect', 'opponent_effect', 'face_up', 'equipped_tributed', 'equipped_to_deck', 'from_deck'}
+        if unknown or 'trigger_like' not in rule:
+            raise ValueError('Invalid trigger condition for %s: %s' % (key, rule['trigger_condition']))
+        flags = sum(bit for name, bit in [('destroyed', 1), ('by_effect', 2), ('opponent_effect', 4), ('face_up', 8), ('equipped_tributed', 16), ('equipped_to_deck', 32), ('from_deck', 64)]
+                    if rule['trigger_condition'].get(name))
+        conditions.append(struct.pack('<HH', gids[int(key)], flags))
+    if conditions:
+        data += b'TGC1' + struct.pack('<I', len(conditions)) + b''.join(conditions)
+    records = [struct.pack('<HH', gids[int(key)], rule['trigger_record_like'])
+               for key, rule in sorted(spec.items(), key=lambda x: int(x[0]))
+               if int(key) in gids and rule.get('trigger_record_like')]
+    if records:
+        data += b'TGR1' + struct.pack('<I', len(records)) + b''.join(records)
+    return data
 
 
 KIND_VALUES = {"draw": 1, "lp": 2}
@@ -176,18 +196,44 @@ def resolver_stats(gids, spec=None):
         spec = _carregar(SPEC_STATS_AUTO, SPEC_STATS)
     prop = propriedades(gids)
     out = []
+    levels = {}
+    protections = {}
+    control_locks = set()
     regras = [(k, r) for k, v in sorted(spec.items(), key=lambda x: int(x[0])) for r in (v if isinstance(v, list) else [v])]   # a card may list several rules
     for k, r in regras:
         cid = int(k)
         if cid not in gids:
             continue
+        if r.get('control_lock'):
+            control_locks.add(gids[cid])
+        if r.get('level'):
+            if r.get('scope') != 'equip' or not 0 < r['level'] <= 32767:
+                raise ValueError('level bonuses currently require an equip rule and a positive integer')
+            if gids[cid] in levels and levels[gids[cid]] != r['level']:
+                raise ValueError('conflicting level bonuses for one equip card')
+            levels[gids[cid]] = r['level']
+        if r.get('attack_protect'):
+            protection = r['attack_protect']
+            f = protection.get('filter') or {}
+            if set(f) - {'monster', 'type', 'attribute'} or f.get('monster') is not True:
+                raise ValueError('attack protection currently supports monster type and attribute conditions')
+            value = ({'self': 1, 'same_name': 2}[protection.get('exclude', 'self')],
+                     _num(f['type'], TIPOS) if 'type' in f else 0, _num(f['attribute'], ATRIBUTOS) if 'attribute' in f else 0)
+            if gids[cid] in protections and protections[gids[cid]] != value:
+                raise ValueError('conflicting attack protections for one card')
+            protections[gids[cid]] = value
         tgt = sorted(i for i, p in prop.items() if combina(p, r["target"])) if r.get("target") else []
         c = r.get("cond") or {}
         cond = sorted(i for i, p in prop.items() if combina(p, c["filter"])) if c else []
-        out.append(struct.pack("<HBBBBiiII", gids[cid], ESCOPOS[r.get("scope", "self")] | (16 if r.get("source") == "st" else 0), LADOS[c.get("side")], 1 if c.get("per") else 0,
+        out.append(struct.pack("<HBBBBiiII", gids[cid], ESCOPOS[r.get("scope", "self")] | (16 if r.get("source") == "st" else 0) | (32 if r.get("target") else 0), LADOS[c.get("side")], (1 if c.get("per") else 0) | (2 if r.get('per_level') else 0),
                                1 if c.get("excl") else 0, r.get("atk", 0), r.get("def", 0), len(tgt), len(cond))
                    + struct.pack("<%dH" % len(tgt), *tgt) + struct.pack("<%dH" % len(cond), *cond))
-    return b"TF3S" + struct.pack("<I", len(out)) + b"".join(out)
+    trailer = b'LVL1' + struct.pack('<I', len(levels)) + b''.join(struct.pack('<Hh', cid, level) for cid, level in sorted(levels.items())) if levels else b''
+    if protections:
+        trailer += b'ATP1' + struct.pack('<I', len(protections)) + b''.join(struct.pack('<HBBBB', cid, *value, 0) for cid, value in sorted(protections.items()))
+    if control_locks:
+        trailer += b'CTL1' + struct.pack('<I', len(control_locks)) + b''.join(struct.pack('<H', cid) for cid in sorted(control_locks))
+    return b"TF3S" + struct.pack("<I", len(out)) + b"".join(out) + trailer
 
 
 if __name__ == "__main__":

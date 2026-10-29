@@ -78,6 +78,9 @@ def gerar():
         # only the plain cases: nothing else in the text besides the bonus and a "when destroyed" clause the game does not play
         efeitos[str(e["tf3_id"])] = {"like": doador, "name": e["name"]}
         s = {"scope": "equip", "atk": atk, "def": dfs}
+        level = re.search(r'its Level is increased by (\d+)', resto)
+        if level:
+            s['level'] = int(level.group(1))
         if r[0]:
             s["target"] = {"monster": True, r[0]: r[1]}
         stats[str(e["tf3_id"])] = s

@@ -1,4 +1,35 @@
 {
+ "7749": {
+  "like": 4310,
+  "trigger_like": 5091,
+  "trigger_record_like": 5091,
+  "trigger_condition": {"from_deck": true}
+ },
+ "7309": {
+  "like": 4310,
+  "trigger_like": 5724,
+  "trigger_record_like": 5724,
+  "trigger_condition": {"equipped_to_deck": true}
+ },
+ "7152": {
+  "like": 4308,
+  "trigger_like": 5724,
+  "trigger_record_like": 5724,
+  "trigger_condition": {"equipped_tributed": true}
+ },
+ "7125": {
+  "like": 4310,
+  "trigger_like": 4317,
+  "trigger_record_like": 6502,
+  "trigger_condition": {"destroyed": true, "by_effect": true, "opponent_effect": true, "face_up": true},
+  "draw": {"self": 1}
+ },
+ "6842": {
+  "like": 4317,
+  "trigger_like": 4317,
+  "trigger_condition": {"destroyed": true},
+  "lp": {"opp": -600}
+ },
  "7220": {
   "like": 5328,
   "zone": "deck",
@@ -132,6 +163,7 @@
  "7842": {
   "like": 4226,
   "trigger_like": 4226,
-  "trigger_event": "battle"
+  "trigger_event": "battle",
+  "after_attack_defense": true
  }
 }

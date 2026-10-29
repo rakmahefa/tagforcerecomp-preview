@@ -114,4 +114,6 @@ if __name__ == "__main__":
         print(k, v["name"], v["zone"], v["filter"])
     print(len(r), "cards")
     if "--list" not in sys.argv:
-        json.dump(r, open(SAIDA, "w", encoding="utf-8"), indent=1, ensure_ascii=False)
+        atual = json.load(open(SAIDA, encoding="utf-8")) if os.path.exists(SAIDA) else {}
+        atual.update(r)
+        json.dump(atual, open(SAIDA, "w", encoding="utf-8"), indent=1, ensure_ascii=False)

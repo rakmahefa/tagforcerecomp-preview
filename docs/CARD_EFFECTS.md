@@ -41,6 +41,8 @@ A new card borrows the record of a card that plays the same way (`like`) and lis
 Filter keys: `monster`, `normal`, `level_min`, `level_max`, `type`, `attribute`, `atk_min`, `atk_max`, `def_min`, `def_max`, `name_has`, `name_is`.
 `tools/mods/tf3_efeitos_param.py` turns a filter into the sorted id set stored in `effects.bin`; the plugin side is described in `plugins/src/TF3Cards/README.md`.
 
+`python -I tools/mods/tf3_audit.py` builds a local review queue in `gen/tf3_audit.json`. A card with a rule may still have other unimplemented clauses; a suggested donor is a lead for investigation, not a verified effect. The report contains game text and stays outside the repository.
+
 ## Triggers
 
 The game decides when an effect starts in one predicate (`09f30ddc`), a chain of `id == N` branches. A spec entry with `"trigger_like": <TF1 card id>` makes the game answer that predicate as if the card were the donor
@@ -91,7 +93,7 @@ Attack traps borrow Mirror Force (`"like": 4887`): the game's own "opponent decl
 
 ## Passive bonuses of continuous Spells
 
-`tools/mods/tf3_stats.json` rules take `"source": "st"` when the card is a continuous Spell: the rule works while the card is face-up in a Spell / Trap zone of either side (scope `own` / `opp` / `all` is relative to its controller). A card may list several rules; "loses 100 ATK x Level" is one rule per Level:
+`tools/mods/tf3_stats.json` rules take `"source": "st"` when the card is a continuous Spell: the rule works while the card is face-up in a Spell / Trap or Field Spell zone of either side (scope `own` / `opp` / `all` is relative to its controller). Sources must have their effects enabled. Spell bonuses also obey the target's native Spell-immunity mask. `"per_level": true` multiplies the bonus by the target's current level, so Burden of the Mighty follows level changes.
 
 ```json
 { "7457": { "scope": "all", "source": "st", "atk": -500, "def": 400, "target": { "monster": true, "attribute": "earth" } } }
@@ -101,12 +103,30 @@ Checked in a duel: Burden of the Mighty took 400 ATK from a Level 4 opponent mon
 
 ## Equip Spells
 
-`tools/mods/tf3_efeitos_equip.py` writes the borrowed record and a `"scope": "equip"` stat rule for texts such as "Equip only to a DARK monster. It gains 400 ATK." Type / Attribute restrictions use a Tag Force 1 equip card with the same restriction as `like`, so the game itself limits the targets. A restriction by name (`Equip only to a "Crystal Beast" monster`) has no donor: the card borrows an unrestricted equip and the stat rule carries the name filter, so it can be attached to any monster but only adds its bonus to a matching one. Extra clauses (return to the deck, draw, destroy instead) are not played.
+`tools/mods/tf3_efeitos_equip.py` writes the borrowed record and a `"scope": "equip"` stat rule for texts such as "Equip only to a DARK monster. It gains 400 ATK." Filtered equip rules also restrict selection through the native common equip-target predicate. This covers printed type, attribute and name restrictions, including Crystal Beast and Gladiator Beast names. Board transformations of those properties still need verification. Extra clauses are implemented individually: Ancient Gear Tank's destruction damage and Lucky Iron Axe's opponent-effect draw are supported; several return/replacement clauses remain incomplete. An equip rule may also specify `"level": 1`; Synchro Boost increases the equipped monster's level as well as its ATK. These level bonuses use an optional `LVL1` trailer in `stat.bin`, read by the updated plugin. `tools/test/tf3_verify_equips.py` checks ordinary valid, invalid and face-down targets on both sides.
+
+`tools/test/tf3_verify_stats.py` checks controlled field fixtures through the real duel engine using the opt-in `tools/test/tf3_probe.cpp` plugin. It tests stat clauses and source disabling/removal; it does not certify every clause or interaction of those cards.
+
+`"attack_protect": {"filter": {"monster": true, "attribute": "wind"}, "exclude": "self"}` prevents selecting the source as an attack target while another matching face-up monster is controlled. `exclude: "same_name"` excludes every copy of the source, as Freya requires. Type and attribute conditions use the engine's current values. `"control_lock": true` prevents changing control of the face-up source while its effect is enabled. These use optional `ATP1` and `CTL1` trailers in `stat.bin`. `tools/test/tf3_verify_attacks.py` compares protection and control behavior with native TF1 cards.
+
+FLIP classification is borrowed from the trigger donor as well as its effect record. This allows Worm Cartaros to enter the native FLIP path when attacked face-down. `tools/test/tf3_verify_flip.py` checks classification and a complete battle-triggered search in an isolated duel.
+
+Equipment stat and level bonuses follow the native equipment relationship list on the target monster. The source may be on either side of the field; spell immunity is relative to that source's controller. An unattached equip grants no bonus. `tools/test/tf3_verify_stats.py` covers both controllers and ignores the unrelated summon-turn field. The event integration tool also checks a normally activated Lucky Iron Axe's 500 ATK bonus before destruction.
+
+Legendary Ebon Steed replaces destruction through the native marking/removal mechanism and the separate battle staging path. A protecting equip already marked for removal cannot replace another destruction. Multiple Steeds are consumed separately; unrelated equipment is preserved. `tools/test/tf3_verify_replacement.py` covers controlled removal causes, simultaneous removal and a complete natural battle. `tools/test/tf3_verify_parallel.py` runs eight independent engine suites with separate execution packages, saves, caches and logs.
+
+`"trigger_condition"` supports `destroyed`, `by_effect`, `opponent_effect` and `face_up`. Conditions use the native removal reason and suppress only the matching source event. `"trigger_record_like"` can borrow a different record for the pending trigger while preserving the normal activation record (Lucky Iron Axe equips like Axe of Despair and resolves its Graveyard trigger with a draw record). These use optional `TGC1` and `TGR1` trailers in `trigger.bin`. `tools/test/tf3_verify_equip_events.py` checks complete resolution and negative causes through opt-in native removal actions in isolated duels; the opponent cause bit is relative to the affected card's controller.
+
+Sword of Dark Rites uses `"trigger_condition": {"equipped_tributed": true}` to match the engine's tribute reason and the attached equip's instance token. Its Graveyard effect borrows Elma's return routine with a private record copy that removes the optional-activation callback; normal activation and native records are unchanged. `tools/test/tf3_verify_sword.py --case natural` checks a real Tribute Summon and return to hand. Non-destructive sends, destruction and banishment are separate negative cases.
+
+Battle Gladius uses `"equipped_to_deck": true` instead. The departing monster must have the equip controller's side of the field as its origin. Its return uses the same mandatory native routine. `tools/test/tf3_verify_sword.py --gladius --case deck` and the `doubledeck`, `opposing`, `hand`, `destroy`, `send` and `banish` cases check this condition through controlled engine actions.
 
 ## Known limits
 
 * The first two new ids (6958, 6959) cannot be Normal Summoned as monsters (the card menu only offers "Show Details"); keep Spell/Trap cards there (`tools/mods/tf3_gids.txt` does).
 * While a trigger runs, the game shows the donor's name and text in the selection panel.
+* Goblin Decoy Squad's `"after_attack_defense": true` trigger flag reuses native Goblin Attack Force markers. Position changes and lock expiry are covered by `tools/test/tf3_verify_position.py`; broader interactions still require verification. Splendid Venus's protection for Spell and Trap effects is not implemented.
+* Pending trigger sources are tracked by donor, controller and instance token, including deferred replay. Controlled queue/transfer tests cover multiple imported sources and the native donor. Wider simultaneous natural-play interactions still need verification. `TF3_EVENT_IDS=0` selects the legacy comparison path.
 
 ## Adding a new kind of effect
 

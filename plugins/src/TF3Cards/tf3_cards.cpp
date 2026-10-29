@@ -35,16 +35,51 @@ struct Ported { uint16_t slot, tf3, like; std::string name; };
 static std::vector<Ported> PORTED;
 static std::map<uint16_t, uint16_t> g_trig;         /* card id -> donor id of its trigger (trigger.bin) */
 static std::map<uint16_t, uint16_t> g_trig_real;   /* donor id of an aliased trigger -> the new card that triggered (see hk_trigger) */
+struct TriggerSource { uint16_t donor, card; uint8_t side; uint16_t token = 0xffff; bool allowed = true; };
+static std::vector<TriggerSource> g_trigger_scope;
+static std::map<uint16_t, uint16_t> g_trigger_conditions;
+static std::map<uint16_t, uint16_t> g_trigger_record_donors;
+static std::map<uint64_t, uint16_t> g_event_sources;
+struct DeferredTrigger { uint32_t bucket, word, param; uint16_t token, card; };
+static std::vector<DeferredTrigger> g_deferred_sources;
+static uint64_t event_key(const uint8_t *o) {
+    return *(const uint16_t *)o | (uint64_t)(o[2] & 1) << 16 |
+        (uint64_t)((*(const uint16_t *)(o + 4) >> 6) & 0x1ff) << 17;
+}
+static bool real_event_ids(void) {
+    static const bool enabled = !getenv("TF3_EVENT_IDS") || strcmp(getenv("TF3_EVENT_IDS"), "0") != 0;
+    return enabled;
+}
+static uint16_t trigger_card(uint16_t id, uint32_t side, uint32_t object = 0) {
+    if (real_event_ids()) {
+        for (auto it = g_trigger_scope.rbegin(); it != g_trigger_scope.rend(); ++it)
+            if (it->donor == id && it->side == side) {
+                if (object >= 0x08000000 && object < 0x0a000000 - 24 && it->token != 0xffff &&
+                    ((*(const uint16_t *)A->mem(object + 4) >> 6) & 0x1ff) != it->token) continue;
+                return it->card;
+            }
+        const uint32_t p = object ? object : *(const uint32_t *)A->mem(0x09f7866c);
+        if (p >= 0x08000000u && p < 0x0a000000u - 24) {
+            const uint8_t *o = A->mem(p);
+            if (*(const uint16_t *)o == id && (o[2] & 1) == side) {
+                const auto found = g_event_sources.find(event_key(o));
+                if (found != g_event_sources.end()) return found->second;
+            }
+        }
+        return id;
+    }
+    const auto it = g_trig_real.find(id);
+    return it != g_trig_real.end() ? it->second : id;
+}
 
 /* Numbers of the draw / life point effects (amount.bin, "TF3V", u32 n, {u16 card id, u8 kind (1 draw, 2 life points), u8 0, i32 self, i32 opp}), written by
  * tools/mods/tf3_efeitos_param.py: the game fixes them per card id inside its handlers, so for the new cards the handlers read them from here instead. */
 struct Amount { int32_t self, opp; };
 static std::map<std::pair<uint16_t, uint8_t>, Amount> g_amt;
-static const Amount *amount_of(uint16_t id, uint8_t kind) {   /* id = the id of the effect object: the new card, or the donor id of an aliased trigger */
+static const Amount *amount_of(uint16_t id, uint8_t kind, uint32_t side, uint32_t object = 0) {   /* id = the id of the effect object */
     auto it = g_amt.find({id, kind});
     if (it != g_amt.end()) return &it->second;
-    const auto r = g_trig_real.find(id);
-    if (r != g_trig_real.end() && (it = g_amt.find({r->second, kind})) != g_amt.end()) return &it->second;
+    if ((it = g_amt.find({trigger_card(id, side, object), kind})) != g_amt.end()) return &it->second;
     return nullptr;
 }
 static void amt_load(void) {
@@ -73,6 +108,7 @@ static bool g_setup_pending;
 static const uint32_t EXT_FIRST_ID = 6958;
 static uint32_t g_ext, g_ext_n;
 static std::vector<uint8_t> g_ext_saved;
+static bool g_ext_writable = true;
 
 static std::wstring ext_path(void) { return std::wstring(A->mod_dir) + L"\\collection_ext.bin"; }
 
@@ -86,19 +122,28 @@ static void ext_init(void) {
     if (FILE *f = _wfopen(ext_path().c_str(), L"rb")) {
         std::vector<uint8_t> b(4 * g_ext_n);
         const size_t n = fread(b.data(), 1, b.size(), f);
+        const bool extra = n == b.size() && fgetc(f) != EOF;
+        const bool invalid = ferror(f) || n % 4 != 0 || extra;
         fclose(f);
-        if (n == b.size()) { memcpy(r, b.data(), b.size()); A->log("TF3 Cards: collection_ext.bin loaded (%u records)", g_ext_n); }
+        if (!invalid) { memcpy(r, b.data(), n); A->log("TF3 Cards: collection_ext.bin loaded (%u records)", (unsigned)(n / 4)); }
+        else { g_ext_writable = false; A->log("TF3 Cards: collection file has an invalid size or could not be read; preserving it without saving"); }
     }
     g_ext_saved.assign(r, r + 4 * g_ext_n);
     A->log("TF3 Cards: %u cards beyond the game's table (ids %u..%u), collection kept in collection_ext.bin", g_ext_n, EXT_FIRST_ID, EXT_FIRST_ID + g_ext_n - 1);
 }
 
 static void ext_save(void) {
-    if (!g_ext_n) return;
+    if (!g_ext_n || !g_ext_writable) return;
     const uint8_t *r = A->mem(g_ext);
     if (memcmp(r, g_ext_saved.data(), g_ext_saved.size()) == 0) return;
-    g_ext_saved.assign(r, r + 4 * g_ext_n);
-    if (FILE *f = _wfopen(ext_path().c_str(), L"wb")) { fwrite(r, 1, 4 * g_ext_n, f); fclose(f); }
+    const std::wstring path = ext_path(), temp = path + L".tmp";
+    FILE *f = _wfopen(temp.c_str(), L"wb");
+    if (!f) { A->log("TF3 Cards: cannot open collection temp file; will retry"); return; }
+    const bool wrote = fwrite(r, 1, 4 * g_ext_n, f) == 4 * g_ext_n;
+    const bool closed = fclose(f) == 0;
+    if (wrote && closed && MoveFileExW(temp.c_str(), path.c_str(), MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH))
+        g_ext_saved.assign(r, r + 4 * g_ext_n);
+    else A->log("TF3 Cards: collection save failed; will retry");
 }
 
 static int hk_collection_entry(TfCpu *c) {
@@ -450,6 +495,9 @@ static void force_cards(uint32_t out) {
 /* A whole deck with the forced cards in it: the duel start shuffles with the game random, so make that random return 0 while it runs (the order is
  * then fixed and the forced cards are placed where the opening hand takes them). The first-turn draw is the same call, so it also becomes fixed. */
 static int hk_duel_start(TfCpu *c) {
+    g_event_sources.clear();
+    g_deferred_sources.clear();
+    g_trig_real.clear();
     if (g_copies <= 0 || g_deck_size > 0) return 0;
     g_in_start = true; A->call_original(c, F_DUEL_START); g_in_start = false;
     return 1;
@@ -565,7 +613,7 @@ static int hk_lp_amounts(TfCpu *c) {
         A->log("LP amounts: card %u byte2 %02x byte3 %02x -> player0 %d, player1 %d", id, o[2], o[3], d[0], d[1]);
         return 1;
     }
-    if (const Amount *am = amount_of(*(const uint16_t *)o, 2)) {
+    if (const Amount *am = amount_of(*(const uint16_t *)o, 2, o[2] & 1, obj)) {
         const uint32_t side = (uint32_t)((o[2] & 1) ^ ((o[3] >> 6) & 1));
         if (getenv("TF3_DEBUG_FX")) A->log("life point effect of id %u: controller %d, other player %d", *(const uint16_t *)o, am->self, am->opp);
         int32_t *d = (int32_t *)A->mem(out);
@@ -585,6 +633,18 @@ static const uint32_t F_EFFECT_DRIVER = 0x09ee3b7c, F_TARGET_ALL = 0x09ebbbe8, F
 static int g_coin = -1;                                       /* -1 = not resolving; 1 = heads (opponent's side), 0 = tails (own side) */
 
 static uint16_t slot_of(uint16_t tf3) { for (const auto &p : PORTED) if (p.tf3 == tf3) return p.slot; return 0; }
+static bool sword_return_enabled() {
+    const auto rule = g_trigger_conditions.find(slot_of(7152));
+    return rule != g_trigger_conditions.end() && (rule->second & 16);
+}
+static bool gladius_return_enabled() {
+    const auto rule = g_trigger_conditions.find(slot_of(7309));
+    return rule != g_trigger_conditions.end() && (rule->second & 32);
+}
+static bool sabre_mill_enabled() {
+    const auto rule = g_trigger_conditions.find(slot_of(7749));
+    return rule != g_trigger_conditions.end() && (rule->second & 64);
+}
 
 static uint32_t call_game(TfCpu *c, uint32_t fn, uint32_t a0, uint32_t a1, uint32_t a2, uint32_t a3) {   /* keeps every caller register */
     uint32_t s[32]; for (int i = 1; i < 32; i++) s[i] = A->reg(c, i);
@@ -594,6 +654,15 @@ static uint32_t call_game(TfCpu *c, uint32_t fn, uint32_t a0, uint32_t a1, uint3
     return r;
 }
 
+static uint32_t call_game6(TfCpu *c, uint32_t fn, uint32_t a0, uint32_t a1, uint32_t a2, uint32_t a3, uint32_t a4, uint32_t a5) {
+    // Allegrex EABI passes arguments five and six in t0/t1, not on the stack.
+    const uint32_t saved[2] = {A->reg(c, 8), A->reg(c, 9)};
+    A->set_reg(c, 8, a4); A->set_reg(c, 9, a5);
+    const uint32_t result = call_game(c, fn, a0, a1, a2, a3);
+    A->set_reg(c, 8, saved[0]); A->set_reg(c, 9, saved[1]);
+    return result;
+}
+
 /* libduel_eng 09ee56a0: the resolution of the draw effects (Pot of Greed and others). It decides by card id how many cards are drawn and by whom, then calls
  * 09f2a3fc(player, count). For the cards of amount.bin it draws the listed numbers: self = the card's controller, opp = the other player. */
 static const uint32_t F_DRAW = 0x09ee56a0, F_DRAW_CARDS = 0x09f2a3fc;
@@ -601,7 +670,7 @@ static int hk_draw(TfCpu *c) {
     const uint32_t obj = A->reg(c, 4);
     if (obj < 0x08000000u || obj > 0x0a000000u - 0x20) return 0;
     const uint8_t *o = A->mem(obj);
-    const Amount *am = amount_of(*(const uint16_t *)o, 1);
+    const Amount *am = amount_of(*(const uint16_t *)o, 1, o[2] & 1, obj);
     if (!am) return 0;
     const uint32_t side = (uint32_t)((o[2] & 1) ^ ((o[3] & 0x7f) >> 6));
     const Amount n = *am;
@@ -739,13 +808,43 @@ static int hk_effect_record(TfCpu *c) {   /* looks the record up as the card it 
     const uint32_t p = A->reg(c, 4);
     if (p < 0x08000000u || p > 0x0a000000u - 8) return 0;
     uint16_t *key = (uint16_t *)A->mem(p);
-    const auto real = g_trig_real.find(*key);       /* an aliased trigger runs under the donor's id: when the card plays another record than the donor's, use that one */
-    if (real != g_trig_real.end())
+    const uint16_t real = trigger_card(*key, A->mem(p)[2] & 1, p);
+    if (sabre_mill_enabled() && real == slot_of(7749) &&
+        ((A->mem(p)[3] >> 4) & 3) == 2) {
+        const uint16_t saved = *key;
+        *key = 5091;
+        A->call_original(c, F_EFFECT_RECORD);
+        *key = saved;
+        return 1;
+    }
+    if (((sword_return_enabled() && real == slot_of(7152)) ||
+         (gladius_return_enabled() && real == slot_of(7309))) && ((A->mem(p)[3] >> 4) & 3) == 2) {
+        const uint16_t saved = *key;
+        *key = 5724;
+        A->call_original(c, F_EFFECT_RECORD);
+        *key = saved;
+        const uint32_t native = A->reg(c, 2);
+        if (native >= 0x08000000 && native <= 0x0a000000 - 24) {
+            static uint32_t mandatory_record;
+            if (!mandatory_record) mandatory_record = A->guest_alloc(24);
+            if (mandatory_record) {
+                memcpy(A->mem(mandatory_record), A->mem(native), 24);
+                // Elma's Graveyard record has an optional-activation callback at +16.
+                // Sword's return is mandatory and has no activation cost.
+                *(uint32_t *)A->mem(mandatory_record + 16) = 0;
+                A->set_reg(c, 2, mandatory_record);
+            }
+        }
+        return 1;
+    }
+    if (real != *key)
         for (const auto &a : PORTED) {
             const auto t = g_trig.find(a.slot);
-            if (a.slot != real->second || !a.like || t == g_trig.end() || t->second == a.like) continue;
+            const auto override_record = g_trigger_record_donors.find(real);
+            const uint16_t record = override_record != g_trigger_record_donors.end() ? override_record->second : a.like;
+            if (a.slot != real || !record || t == g_trig.end() || t->second == record) continue;
             const uint16_t donor = *key;
-            *key = a.like;
+            *key = record;
             A->call_original(c, F_EFFECT_RECORD);
             *key = donor;
             return 1;
@@ -808,14 +907,14 @@ static void fx_scan(TfCpu *c, uint32_t side_arg, uint32_t slot, const DataEffect
     }
 }
 
-static uint16_t fx_card(uint16_t id) {   /* the card whose data effect applies to an effect object with this id */
+static uint16_t fx_card(uint16_t id, uint32_t side) {   /* the card whose data effect applies to an effect object with this id */
     if (g_fx.count(id)) return id;
-    const auto r = g_trig_real.find(id);
-    return r != g_trig_real.end() && g_fx.count(r->second) ? r->second : id;
+    const uint16_t real = trigger_card(id, side);
+    return g_fx.count(real) ? real : id;
 }
 
 static int hk_cand_run(TfCpu *c) {   /* (side, effect card id, step): the queue starts empty; returns how many cards were queued */
-    const auto it = g_fx.find(fx_card((uint16_t)A->reg(c, 5)));
+    const auto it = g_fx.find(fx_card((uint16_t)A->reg(c, 5), A->reg(c, 4) & 1));
     if (it == g_fx.end()) return 0;
     uint32_t *ctr = (uint32_t *)A->mem(CAND_COUNTER);
     *ctr = 0;
@@ -825,7 +924,7 @@ static int hk_cand_run(TfCpu *c) {   /* (side, effect card id, step): the queue 
 }
 
 static int hk_cand_count(TfCpu *c) {   /* same scan, but only counts: the queue is put back as it was */
-    const auto it = g_fx.find(fx_card((uint16_t)A->reg(c, 5)));
+    const auto it = g_fx.find(fx_card((uint16_t)A->reg(c, 5), A->reg(c, 4) & 1));
     if (it == g_fx.end()) return 0;
     uint32_t *ctr = (uint32_t *)A->mem(CAND_COUNTER);
     const uint32_t before = *ctr;
@@ -841,8 +940,13 @@ static int hk_cand_count(TfCpu *c) {   /* same scan, but only counts: the queue 
  * original runs, every rule whose source monster is face-up on the field adds its bonus to the monster being asked about.
  * Monster zones: id (u16 & 0x1fff) at side+0x30+20*slot, flags (u32) at +0x40+20*slot (bit 1 / bit 5 = not face-up). */
 static const uint32_t F_STATS = 0x09f56da8;
+static const uint32_t F_LEVEL = 0x09f5a284;
 struct StatRule { uint16_t src; uint8_t scope, cond_side, per, excl; int32_t atk, def; std::vector<uint16_t> target, cond; };
 static std::vector<StatRule> g_stat;
+static std::map<uint16_t, int16_t> g_equip_level;
+struct AttackProtection { uint8_t exclude, type, attribute; };
+static std::map<uint16_t, AttackProtection> g_attack_protect;
+static std::set<uint16_t> g_control_lock;
 
 static void stat_load(void) {
     const std::wstring p = std::wstring(A->mod_dir) + L"\\stat.bin";
@@ -858,6 +962,28 @@ static void stat_load(void) {
             if ((nt && fread(r.target.data(), 2, nt, f) != nt) || (nc && fread(r.cond.data(), 2, nc, f) != nc)) break;
             g_stat.push_back(std::move(r));
         }
+        uint32_t tail[2];
+        while (fread(tail, 4, 2, f) == 2 && tail[1] <= 0x10000) {
+            if (tail[0] == 0x314c564c) {
+                for (uint32_t i = 0; i < tail[1]; i++) {
+                    uint16_t id; int16_t delta;
+                    if (fread(&id, 2, 1, f) != 1 || fread(&delta, 2, 1, f) != 1) break;
+                    if (delta > 0) g_equip_level[id] = delta;
+                }
+            } else if (tail[0] == 0x31505441) {
+                for (uint32_t i = 0; i < tail[1]; i++) {
+                    uint16_t id; uint8_t b[4];
+                    if (fread(&id, 2, 1, f) != 1 || fread(b, 1, 4, f) != 4) break;
+                    if (b[0] == 1 || b[0] == 2) g_attack_protect[id] = AttackProtection{b[0], b[1], b[2]};
+                }
+            } else if (tail[0] == 0x314c5443) {
+                for (uint32_t i = 0; i < tail[1]; i++) {
+                    uint16_t id;
+                    if (fread(&id, 2, 1, f) != 1) break;
+                    g_control_lock.insert(id);
+                }
+            } else break;
+        }
     }
     fclose(f);
     A->log("TF3 Cards: %u passive stat rules loaded", (unsigned)g_stat.size());
@@ -869,34 +995,290 @@ static uint32_t zone_card(uint32_t side, uint32_t slot) {   /* face-up monster i
     return (flags & 0x22) ? 0 : id;
 }
 
+static bool zone_effect_active(uint32_t side, uint32_t slot) {
+    const uint32_t entry = DUEL_SIDES + side * DUEL_SIDE_SIZE + 0x30 + 20 * slot;
+    const uint32_t flags = *(const uint32_t *)A->mem(entry + 16);
+    const uint32_t enabled = *(const uint16_t *)A->mem(entry + 8);
+    // Match the engine's continuous-effect gate, including effect negation.
+    return (~((flags & 3) >> 1) & enabled & ~((flags & 0x3f) >> 5)) != 0;
+}
+
+// Experimental: identify a protected native Spell/Trap event.
+static bool venus_protects_event(TfCpu *c, uint32_t target) {
+    if (target < 0x08000000 || target > 0x0a000000 - 24) return false;
+    const uint8_t *event = A->mem(target);
+    const uint16_t card = *(const uint16_t *)event & 0x1fff;
+    const uint32_t type = call_game(c, 0x09f678f0, card, 0, 0, 0);
+    if (type != 22 && type != 23) return false;
+    const uint32_t side = event[2] & 1;
+    for (uint32_t slot = 0; slot < 5; ++slot) {
+        if (zone_card(side, slot) == slot_of(7347) && slot_of(7347) && zone_effect_active(side, slot)) {
+            return true;
+        }
+    }
+    return false;
+}
+
+static int hk_venus_negation(TfCpu *c) {
+    if (!venus_protects_event(c, A->reg(c, 5))) return 0;
+    A->set_reg(c, 2, 0);
+    return 1;
+}
+
+static unsigned g_venus_effect_scope;
+static uint32_t g_venus_effect_side, g_venus_effect_card;
+static int hk_venus_continuous_negation(TfCpu *c) {
+    if (!g_venus_effect_scope || A->reg(c, 4) != g_venus_effect_side ||
+        (A->reg(c, 5) & 0x1fff) != g_venus_effect_card) return 0;
+    A->set_reg(c, 2, 0);
+    return 1;
+}
+
+static int hk_venus_effect_negation(TfCpu *c) {
+    if (!venus_protects_event(c, A->reg(c, 4))) return 0;
+    const uint32_t event = A->reg(c, 4), saved_side = g_venus_effect_side, saved_card = g_venus_effect_card;
+    g_venus_effect_side = A->mem(event)[2] & 1;
+    g_venus_effect_card = *(uint16_t *)A->mem(event) & 0x1fff;
+    ++g_venus_effect_scope;
+    A->call_original(c, 0x09ed26d0);
+    --g_venus_effect_scope;
+    g_venus_effect_side = saved_side; g_venus_effect_card = saved_card;
+    return 1;
+}
+
+static unsigned g_venus_chain_scope;
+static int hk_venus_chain(TfCpu *c) {
+    const uint32_t count = *(uint32_t *)A->mem(0x09f78660);
+    if (!count || count > 16 || *(uint32_t *)A->mem(0x09f78784) != 4) return 0;
+    const uint32_t event = 0x09f784e0 + (count - 1) * 24;
+    if (!venus_protects_event(c, event)) return 0;
+    ++g_venus_chain_scope;
+    A->call_original(c, 0x09eb7248);
+    --g_venus_chain_scope;
+    return 1;
+}
+
+static int hk_venus_frontier(TfCpu *c) {
+    if (!g_venus_chain_scope || A->reg(c, 5) != 5322) return 0;
+    A->set_reg(c, 2, 0);
+    return 1;
+}
+
+static int hk_venus_phoenix(TfCpu *c) {
+    if (!g_venus_chain_scope || A->reg(c, 5) != 6663) return 0;
+    A->set_reg(c, 2, 0);
+    return 1;
+}
+
+static std::vector<TriggerSource> g_milled_sabres;
+static int hk_sabre_mill(TfCpu *c) {
+    const uint32_t side = A->reg(c, 4), requested = A->reg(c, 5);
+    const uint16_t sabre = slot_of(7749);
+    if (side > 1 || !sabre) return 0;
+    const uint32_t base = DUEL_SIDES + side * DUEL_SIDE_SIZE;
+    const uint32_t count = std::min(requested, *(uint32_t *)A->mem(base + 16));
+    const size_t scope = g_milled_sabres.size();
+    for (uint32_t i = 0; i < count && i < 80; ++i) {
+        const uint32_t entry = base + 0x3a0 + i * 4;
+        const uint16_t packed = *(uint16_t *)A->mem(entry);
+        if ((packed & 0x1fff) != sabre) continue;
+        const uint16_t token = (uint16_t)(((*(uint16_t *)A->mem(entry + 2) & 0x3fff) >> 6) * 2 + ((packed >> 13) & 1));
+        g_milled_sabres.push_back({5091, sabre, (uint8_t)side, token, true});
+    }
+    A->call_original(c, 0x09f2a7ec);
+    g_milled_sabres.resize(scope);
+    return 1;
+}
+
+static int hk_sabre_mill_event(TfCpu *c) {
+    if (A->reg(c, 4) != 0x1c || g_milled_sabres.empty()) return 0;
+    const uint32_t packet = A->reg(c, 5);
+    if (((packet >> 12) & 15) != 14) return 0;
+    for (const auto &source : g_milled_sabres) {
+        if (source.token != (packet & 0x1ff) || source.side != ((packet >> 9) & 1)) continue;
+        const size_t scope = g_trigger_scope.size();
+        g_trigger_scope.push_back(source);
+        // Reuse the native milled-card event packet without changing the card's type or identity.
+        call_game(c, 0x09eb5640, ((uint32_t)source.side << 31) | 0x384e0000 | source.card, source.token, packet, 0);
+        g_trigger_scope.resize(scope);
+        break;
+    }
+    return 0;
+}
+
+static int hk_equip_target(TfCpu *c) {
+    const uint32_t object = A->reg(c, 4), side = A->reg(c, 5), slot = A->reg(c, 6);
+    if (object < 0x08000000 || object > 0x0a000000 - 24 || side > 1 || slot > 4) return 0;
+    const uint16_t raw = *(const uint16_t *)A->mem(object);
+    const uint16_t source = trigger_card(raw, A->mem(object)[2] & 1, object);
+    if (source == slot_of(7749) && ((A->mem(object)[3] >> 4) & 3) == 2 &&
+        side != (A->mem(object)[2] & 1)) {
+        A->set_reg(c, 2, 0);
+        return 1;
+    }
+    for (const auto &r : g_stat) {
+        if (r.src != source || (r.scope & 7) != 4 || (!(r.scope & 32) && r.target.empty())) continue;
+        const uint16_t target = (uint16_t)zone_card(side, slot);
+        if (!std::binary_search(r.target.begin(), r.target.end(), target)) {
+            A->set_reg(c, 2, 0);
+            return 1;
+        }
+    }
+    return 0;
+}
+
+static bool equipped_to(uint32_t source_side, uint32_t source_slot, uint32_t side, uint32_t slot) {
+    uint32_t node = *(const uint16_t *)A->mem(DUEL_SIDES + side * DUEL_SIDE_SIZE + 0x30 + 20 * slot + 10);
+    // Native equipment relationships are effect-list nodes, not the summon-turn field at +4.
+    for (unsigned count = 0; node && count < 65536; ++count) {
+        const uint32_t entry = 0x09f7c458 + node * 8;
+        const uint16_t ref = *(const uint16_t *)A->mem(entry);
+        const uint8_t type = *A->mem(entry + 2) & 15;
+        if ((type == 10 || type == 11) && (ref & 255) == source_side && (ref >> 8) == source_slot) return true;
+        node = *(const uint16_t *)A->mem(entry + 6);
+    }
+    return false;
+}
+
+// Reuse native destruction replacement, including its simultaneous-removal prepass.
+static unsigned g_replacement_depth;
+struct TributeEquip { uint16_t card, token; };
+static std::vector<TributeEquip> g_tribute_equips;
+static std::vector<TributeEquip> g_deck_equips;
+static int hk_equipment_cleanup(TfCpu *c) {
+    const uint32_t side = A->reg(c, 5), slot = A->reg(c, 6), flags = A->reg(c, 7);
+    if (getenv("TF3_DEBUG_SWORD")) A->log("Sword cleanup: side %u slot %u flags %08x key %08x id %u head %u", side, slot, flags, A->reg(c, 4), *(uint16_t *)A->mem(A->reg(c, 4)) & 0x1fff, *(uint16_t *)A->mem(A->reg(c, 4) + 10));
+    const size_t size = g_tribute_equips.size();
+    if (side < 2 && slot < 5 && (flags & 0x1000)) {
+        for (uint32_t ss = 0; ss < 2; ++ss) for (uint32_t sk = 5; sk < 10; ++sk) {
+            const uint32_t entry = DUEL_SIDES + ss * DUEL_SIDE_SIZE + 0x30 + sk * 20;
+            const uint16_t packed = *(uint16_t *)A->mem(entry);
+            if ((packed & 0x1fff) != slot_of(7152) || !equipped_to(ss, sk, side, slot)) continue;
+            const uint16_t token = (uint16_t)(((*(uint16_t *)A->mem(entry + 2) & 0x3fff) >> 6) * 2 + ((packed >> 13) & 1));
+            g_tribute_equips.push_back({(uint16_t)(packed & 0x1fff), token});
+        }
+    }
+    A->call_original(c, 0x09f34044);
+    g_tribute_equips.resize(size);
+    return 1;
+}
+static uint32_t ebon_replacement(TfCpu *c, uint32_t side, uint32_t slot) {
+    if (side > 1 || slot >= 5) return 0xffff;
+    const uint16_t target = (uint16_t)zone_card(side, slot);
+    const uint16_t steed = slot_of(7000);
+    if (!target || !steed) return 0xffff;
+    const uint32_t immunity = call_game(c, 0x09f53430, side, slot, 0, 0);
+    for (const auto &rule : g_stat) {
+        if (rule.src != steed || (rule.scope & 15) != 4 ||
+            !std::binary_search(rule.target.begin(), rule.target.end(), target)) continue;
+        for (uint32_t ss = 0; ss < 2; ++ss) for (uint32_t sk = 5; sk < 10; ++sk) {
+            if (*(const uint32_t *)A->mem(0x09f7bc48) & (1u << (sk + ss * 16))) continue;
+            if (zone_card(ss, sk) == steed && zone_effect_active(ss, sk) &&
+                !(immunity & (ss == side ? 1 : 2)) && equipped_to(ss, sk, side, slot)) return ss | (sk << 8);
+        }
+    }
+    return 0xffff;
+}
+
+static int hk_replacement_present(TfCpu *c) {
+    const uint32_t side = A->reg(c, 4), slot = A->reg(c, 5), id = A->reg(c, 6);
+    if (g_venus_chain_scope && id == 5728) { A->set_reg(c, 2, 0); return 1; }
+    A->call_original(c, 0x09f454b8);
+    // Include the mass-destruction prepass in the native replacement mechanism.
+    if (id == 6181 && !A->reg(c, 2) && ebon_replacement(c, side, slot) != 0xffff) A->set_reg(c, 2, 1);
+    return 1;
+}
+
+static int hk_replacement_equip(TfCpu *c) {
+    if (!g_replacement_depth || A->reg(c, 6) != 1) return 0;
+    const uint32_t source = ebon_replacement(c, A->reg(c, 4), A->reg(c, 5));
+    if (source == 0xffff) return 0;
+    // Select the protecting equip explicitly, never an unrelated first equip.
+    A->set_reg(c, 2, source);
+    return 1;
+}
+
+static int replacement_wrap(TfCpu *c, uint32_t address) {
+    const size_t size = g_deck_equips.size();
+    const uint32_t side = A->reg(c, 4), slot = A->reg(c, 5);
+    if (address == 0x09f34d64 && gladius_return_enabled() && side < 2 && slot < 5 && A->reg(c, 6) == 13) {
+        for (uint32_t sk = 5; sk < 10; ++sk) {
+            const uint32_t entry = DUEL_SIDES + side * DUEL_SIDE_SIZE + 0x30 + sk * 20;
+            const uint16_t packed = *(uint16_t *)A->mem(entry);
+            if ((packed & 0x1fff) != slot_of(7309) || !equipped_to(side, sk, side, slot)) continue;
+            const uint16_t token = (uint16_t)(((*(uint16_t *)A->mem(entry + 2) & 0x3fff) >> 6) * 2 + ((packed >> 13) & 1));
+            g_deck_equips.push_back({(uint16_t)(packed & 0x1fff), token});
+        }
+    }
+    ++g_replacement_depth;
+    A->call_original(c, address);
+    --g_replacement_depth;
+    g_deck_equips.resize(size);
+    return 1;
+}
+static int hk_destroy_mark(TfCpu *c) { return replacement_wrap(c, 0x09f3332c); }
+static int hk_destroy_remove(TfCpu *c) { return replacement_wrap(c, 0x09f34d64); }
+static int hk_battle_destroy_replace(TfCpu *c) {
+    // The native battle path stages doomed monsters outside their field zones.
+    // Replace before that move, so the existing monster instance stays in place.
+    const uint32_t stage = *(uint32_t *)A->mem(0x09f790d0);
+    const uint32_t side = (*(uint16_t *)A->mem(0x09f788c0) >> 15) & 1;
+    const uint32_t slot = *(uint16_t *)A->mem(0x09f788c2);
+    const uint32_t participant = *(uint16_t *)A->mem(0x09f788c4);
+    if (participant > 1) return 0;
+    const uint32_t source = ebon_replacement(c, side, slot);
+    if (getenv("TF3_DEBUG_REPLACE")) A->log("replacement staging: stage %u side %u slot %u participant %u source %04x", stage, side, slot, participant, source);
+    if (stage != 1) return 0;
+    if (source == 0xffff) return 0;
+    if (!call_game6(c, 0x09f34d64, source & 255, source >> 8, 14, 2, 0, 0)) return 0;
+    const uint32_t battle = 0x09f77dcc + 0x38 * participant;
+    *(uint32_t *)A->mem(battle + 44) = 0;
+    *(uint32_t *)A->mem(battle + 48) = 1;
+    *(uint32_t *)A->mem(0x09f790cc) = 0;
+    return 1;
+}
+
 static int hk_stats(TfCpu *c) {
     const uint32_t side = A->reg(c, 4) & 1, slot = A->reg(c, 5), out = A->reg(c, 6);
+    static const bool dbg = getenv("TF3_DEBUG_STATS") != nullptr;
+    if (dbg) { static int n; if (n++ < 10) A->log("stat entry: side %u slot %u output %08x", side, slot, out); }
     A->call_original(c, F_STATS);
     if (slot >= 5 || out < 0x08000000u || out > 0x0a000000u - 64) return 1;
     const uint32_t me = zone_card(side, slot);
     if (!me) return 1;
     int32_t *atk = (int32_t *)A->mem(out + 20), *def = (int32_t *)A->mem(out + 24);
+    int spell_immunity = -1;
+    const auto spell_affects = [&](uint32_t source_side) {
+        if (spell_immunity < 0) spell_immunity = (int)call_game(c, 0x09f53430, side, slot, 0, 0);
+        return (spell_immunity & (source_side == side ? 1 : 2)) == 0;
+    };
+    if (dbg) {
+        static std::set<uint32_t> seen_cards;
+        if (seen_cards.insert(me).second) A->log("stat query: target %u side %u slot %u base ATK %d DEF %d", me, side, slot, *atk, *def);
+    }
     for (const auto &r : g_stat) {
-        if ((r.scope & 15) != 4) continue;   /* equip card: a face-up Spell/Trap zone of this side holds it and its u32 at +4 names the equipped monster zone + 1 */
-        if (!r.target.empty() && !std::binary_search(r.target.begin(), r.target.end(), (uint16_t)me)) continue;
-        for (uint32_t k = 0; k < 5; k++) {
-            const uint32_t e = DUEL_SIDES + side * DUEL_SIDE_SIZE + 0x30 + 100 + 20 * k;
+        if ((r.scope & 15) != 4) continue;
+        if (((r.scope & 32) || !r.target.empty()) && !std::binary_search(r.target.begin(), r.target.end(), (uint16_t)me)) continue;
+        for (uint32_t ss = 0; ss < 2; ++ss) for (uint32_t k = 0; k < 5; k++) {
+            const uint32_t e = DUEL_SIDES + ss * DUEL_SIDE_SIZE + 0x30 + 100 + 20 * k;
             const uint32_t id = *(const uint16_t *)A->mem(e) & 0x1fff, flags = *(const uint32_t *)A->mem(e + 0x10);
-            if (id == r.src && !(flags & 0x22) && *(const uint32_t *)A->mem(e + 4) == slot + 1) { *atk += r.atk; *def += r.def; }
+            if (id == r.src && !(flags & 0x22) && zone_effect_active(ss, k + 5) && equipped_to(ss, k + 5, side, slot) && spell_affects(ss)) { *atk += r.atk; *def += r.def; }
         }
     }
     for (const auto &r : g_stat)
         for (uint32_t ss = 0; ss < 2; ss++)
-            for (uint32_t sk = 0; sk < 5; sk++) {
+            for (uint32_t sk = 0; sk < ((r.scope & 16) ? 6u : 5u); sk++) {
                 const uint8_t sc = r.scope & 15;   /* bit 4: the source is a face-up Spell / Trap card of the field (continuous Spell) instead of a monster */
                 if (sc == 4) continue;
                 if (r.scope & 16) {
                     const uint32_t e = DUEL_SIDES + ss * DUEL_SIDE_SIZE + 0x30 + 100 + 20 * sk;
                     if ((*(const uint16_t *)A->mem(e) & 0x1fff) != r.src || (*(const uint32_t *)A->mem(e + 0x10) & 0x22)) continue;
                 } else if (zone_card(ss, sk) != r.src) continue;
+                if (!zone_effect_active(ss, sk + ((r.scope & 16) ? 5 : 0))) continue;
+                if ((r.scope & 16) && !spell_affects(ss)) continue;
                 const bool mine = ss == side;
                 if (sc == 0 ? (ss != side || sk != slot) : sc == 1 ? !mine : sc == 2 ? mine : false) continue;
-                if (sc != 0 && !r.target.empty() && !std::binary_search(r.target.begin(), r.target.end(), (uint16_t)me)) continue;
+                if (sc != 0 && ((r.scope & 32) || !r.target.empty()) && !std::binary_search(r.target.begin(), r.target.end(), (uint16_t)me)) continue;
                 int32_t mult = 1;
                 if (r.cond_side) {
                     int32_t n = 0;
@@ -910,12 +1292,69 @@ static int hk_stats(TfCpu *c) {
                         }
                     }
                     if (!n) continue;
-                    mult = r.per ? n : 1;
+                    mult = (r.per & 1) ? n : 1;
                 }
+                if (r.per & 2) mult *= *(const int32_t *)A->mem(out + 16);
                 *atk += r.atk * mult; *def += r.def * mult;
+                if (dbg) {
+                    static std::set<uint64_t> seen;
+                    const uint64_t key = ((uint64_t)r.src << 32) | ((uint64_t)me << 16) | (side << 8) | slot;
+                    if (seen.insert(key).second) A->log("stat rule: source %u target %u side %u slot %u -> ATK %d DEF %d", r.src, me, side, slot, *atk, *def);
+                }
             }
     if (*atk < 0) *atk = 0;
     if (*def < 0) *def = 0;
+    return 1;
+}
+
+static int hk_level(TfCpu *c) {
+    const uint32_t side = A->reg(c, 4) & 1, slot = A->reg(c, 5);
+    A->call_original(c, F_LEVEL);
+    const uint32_t me = slot < 5 ? zone_card(side, slot) : 0;
+    if (!me) return 1;
+    int32_t delta = 0;
+    const uint32_t immunity = call_game(c, 0x09f53430, side, slot, 0, 0);
+    for (uint32_t ss = 0; ss < 2; ++ss) for (uint32_t k = 0; k < 5; k++) {
+        const uint32_t e = DUEL_SIDES + ss * DUEL_SIDE_SIZE + 0x30 + 20 * (k + 5);
+        const uint16_t id = *(const uint16_t *)A->mem(e) & 0x1fff;
+        const auto level = g_equip_level.find(id);
+        if (level == g_equip_level.end() || !zone_effect_active(ss, k + 5) || !equipped_to(ss, k + 5, side, slot) || (immunity & (ss == side ? 1 : 2))) continue;
+        for (const auto &r : g_stat) {
+            if (r.src != id || (r.scope & 15) != 4) continue;
+            if (((r.scope & 32) || !r.target.empty()) && !std::binary_search(r.target.begin(), r.target.end(), (uint16_t)me)) continue;
+            delta += level->second;
+            break;
+        }
+    }
+    if (delta) A->set_reg(c, 2, A->reg(c, 2) + delta);
+    return 1;
+}
+
+static int hk_attack_target(TfCpu *c) {
+    const uint32_t side = A->reg(c, 6), slot = A->reg(c, 7);
+    // Like Command Knight, enforce protection when choosing a target, not when resolving an established attack.
+    if (!A->reg(c, 8) || side > 1 || slot >= 5) return 0;
+    const uint16_t me = (uint16_t)zone_card(side, slot);
+    const auto rule = g_attack_protect.find(me);
+    if (rule == g_attack_protect.end() || !zone_effect_active(side, slot)) return 0;
+    A->call_original(c, 0x09f5153c);
+    if (!A->reg(c, 2)) return 1;
+    for (uint32_t k = 0; k < 5; k++) {
+        const uint16_t id = (uint16_t)zone_card(side, k);
+        if (!id || k == slot || (rule->second.exclude == 2 && id == me)) continue;
+        if (rule->second.type && call_game(c, 0x09f5a690, side, k, 0, 0) != rule->second.type) continue;
+        if (rule->second.attribute && call_game(c, 0x09f5ab44, side, k, 0, 0) != rule->second.attribute) continue;
+        A->set_reg(c, 2, 0);
+        break;
+    }
+    return 1;
+}
+
+static int hk_control(TfCpu *c) {
+    const uint32_t side = A->reg(c, 4), slot = A->reg(c, 5);
+    if (side > 1 || slot >= 5 || !g_control_lock.count((uint16_t)zone_card(side, slot)) || !zone_effect_active(side, slot)) return 0;
+    A->call_original(c, 0x09f53358);
+    A->set_reg(c, 2, 0);
     return 1;
 }
 
@@ -982,6 +1421,7 @@ static int hk_trigger_debug(TfCpu *c) {
  * donor: the key's id is swapped while the predicate runs. The effect itself comes from the borrowed record and the data effect of the card. */
 static std::map<uint16_t, bool> g_trig_battle;   /* cards whose alias holds while the battle resolution runs (09ea28d8: "destroys a monster by battle", ...) */
 static std::map<uint16_t, bool> g_trig_summon;   /* cards whose alias also holds while the game scans the events of a finished action (Summon triggers) */
+static std::set<uint16_t> g_after_attack_defense;
 
 static void trig_load(void) {
     const std::wstring p = std::wstring(A->mod_dir) + L"\\trigger.bin";
@@ -995,7 +1435,18 @@ static void trig_load(void) {
             g_trig[e[0]] = e[1] & 0x1fff;
             if (e[1] & 0x8000) g_trig_summon[e[0]] = true;
             if (e[1] & 0x4000) g_trig_battle[e[0]] = true;
+            if (e[1] & 0x2000) g_after_attack_defense.insert(e[0]);
         }
+    uint32_t trailer[2];
+    while (fread(trailer, 4, 2, f) == 2 && trailer[1] <= 0x10000) {
+        if (trailer[0] != 0x31434754 && trailer[0] != 0x31524754) break;
+        for (uint32_t i = 0; i < trailer[1]; ++i) {
+            uint16_t entry[2];
+            if (fread(entry, sizeof entry, 1, f) != 1) break;
+            if (trailer[0] == 0x31434754) g_trigger_conditions[entry[0]] = entry[1];
+            else g_trigger_record_donors[entry[0]] = entry[1];
+        }
+    }
     fclose(f);
     A->log("TF3 Cards: %u trigger aliases loaded", (unsigned)g_trig.size());
 }
@@ -1007,12 +1458,49 @@ static int hk_trigger(TfCpu *c) {
     const auto it = g_trig.find(*idp & 0x1fff);
     if (it == g_trig.end()) return 0;
     const uint16_t saved = *idp;
+    const size_t scope = g_trigger_scope.size();
+    bool adapt_tribute = false;
+    const uint32_t original_flags = A->reg(c, 7);
+    if (real_event_ids()) {
+        const uint16_t token = (uint16_t)(((*(const uint16_t *)A->mem(key + 2) & 0x3fff) >> 6) * 2 + ((saved >> 13) & 1));
+        const uint8_t owner = (uint8_t)((saved >> 13) & 1), controller = (uint8_t)((A->reg(c, 4) >> 9) & 1);
+        const uint16_t condition = g_trigger_conditions[(uint16_t)(saved & 0x1fff)];
+        const uint32_t event = A->reg(c, 4), flags = A->reg(c, 7);
+        const bool effect = (flags & 0x80000) && !(event & 0x10000);
+        const bool allowed = (!(condition & 1) || (flags & 2)) && (!(condition & 2) || effect) &&
+            (!(condition & 4) || (effect && (flags & 1))) &&
+            (!(condition & 8) || (A->mem(key + 8)[0] & 1)) &&
+            (!(condition & 16) || std::any_of(g_tribute_equips.begin(), g_tribute_equips.end(),
+                [&](const TributeEquip &e) { return e.card == (saved & 0x1fff) && e.token == token; })) &&
+            (!(condition & 32) || std::any_of(g_deck_equips.begin(), g_deck_equips.end(),
+                [&](const TributeEquip &e) { return e.card == (saved & 0x1fff) && e.token == token; })) &&
+            (!(condition & 64) || (((event >> 10) & 15) == 12));
+        g_trigger_scope.push_back({it->second, (uint16_t)(saved & 0x1fff), owner, token, allowed});
+        adapt_tribute = allowed && (condition & 48) && it->second == 5724;
+        if (controller != owner) g_trigger_scope.push_back({it->second, (uint16_t)(saved & 0x1fff), controller, token, allowed});
+    }
     *idp = (uint16_t)((saved & ~0x1fff) | it->second);
+    if (adapt_tribute) A->set_reg(c, 7, original_flags | 0x80000);
     A->call_original(c, F_TRIGGER);
+    if (adapt_tribute) A->set_reg(c, 7, original_flags);
     *idp = saved;
+    g_trigger_scope.resize(scope);
     static const bool dbg = getenv("TF3_DEBUG_TRIG2") != nullptr;
     if (dbg) { static int n; if (n++ < 300) A->log("trigger alias: card %u as %u event %08x a2 %u flags %08x key %02x%02x%02x%02x -> %u", saved & 0x1fff, it->second, A->reg(c, 4), A->reg(c, 6), A->reg(c, 7), A->mem(key)[0], A->mem(key)[1], A->mem(key)[2], A->mem(key)[3], A->reg(c, 2)); }
-    if (A->reg(c, 2)) g_trig_real[it->second] = (uint16_t)(saved & 0x1fff);   /* the pending effect carries the donor's id: remember who it really is */
+    if (!real_event_ids() && A->reg(c, 2)) g_trig_real[it->second] = (uint16_t)(saved & 0x1fff);
+    return 1;
+}
+
+/* BOOT keeps a fixed list of FLIP monsters, independent of their effect records.
+ * Borrow that classification too, so a face-down imported monster attacked in
+ * battle reaches the normal FLIP event validation and resolution path. */
+static int hk_flip_kind(TfCpu *c) {
+    const uint32_t id = A->reg(c, 4);
+    const auto it = g_trig.find((uint16_t)id);
+    if (id > 0x1fff || it == g_trig.end()) return 0;
+    A->set_reg(c, 4, it->second);
+    A->call_original(c, 0x0884d1b8);
+    A->set_reg(c, 4, id);
     return 1;
 }
 
@@ -1029,9 +1517,18 @@ static int hk_post_action(TfCpu *c) {
     const auto it = g_trig.find(id);
     if (it == g_trig.end() || !g_trig_summon.count(id)) { g_trig_real.erase(id); return 0; }
     const uint32_t saved = *w;
+    const size_t scope = g_trigger_scope.size();
+    // The action record stores its controller in bit 0.
+    if (real_event_ids()) {
+        const uint32_t side = saved & 1, slot = (saved & 0x1f) >> 1;
+        const uint8_t *entry = A->mem(DUEL_SIDES + side * DUEL_SIDE_SIZE + 0x30 + slot * 20);
+        const uint16_t token = (uint16_t)(((*(const uint16_t *)(entry + 2) & 0x3fff) >> 6) * 2 + ((entry[1] >> 5) & 1));
+        g_trigger_scope.push_back({it->second, id, (uint8_t)side, zone_card(side, slot) == id ? token : (uint16_t)0xffff});
+    }
     *w = (saved & ~(0x1fffu << 8)) | ((uint32_t)it->second << 8);
-    g_trig_real[it->second] = id;
+    if (!real_event_ids()) g_trig_real[it->second] = id;
     A->call_original(c, F_POST_ACTION);
+    g_trigger_scope.resize(scope);
     if (((*w >> 8) & 0x1fff) == it->second) *w = (*w & ~(0x1fffu << 8)) | (saved & (0x1fffu << 8));
     return 1;
 }
@@ -1040,25 +1537,116 @@ static int hk_post_action(TfCpu *c) {
  * and queues the events ("destroys a monster by battle", ...) through a chain of `id == N` branches. A new card flagged for it shows its donor's id there. */
 static const uint32_t F_BATTLE = 0x09ea28d8, BATTLE_ID = 0x09f77ddc;
 static const uint32_t F_BATTLE_DMG = 0x09f28de8;   /* "inflicts Battle Damage": queues 0x1e22xxxx events through 09eb5640 */
+/* research aid (TF3_DEBUG_BATTLE=1): dumps the two battle records (14 words each) before and after the battle resolution functions run */
+static void battle_dump(const char *when, const char *what, uint32_t side) {
+    const uint32_t *r = (const uint32_t *)A->mem(BATTLE_ID);
+    char b[512]; int n = 0;
+    for (int i = 0; i < 28; i++) n += snprintf(b + n, sizeof b - n, "%s%x", i == 14 ? " | " : i ? " " : "", r[i]);
+    A->log("battle %s %s(side %u): %s", when, what, side, b);
+}
 static int battle_gate(TfCpu *c, uint32_t fn) {
     uint32_t *ids[2] = {(uint32_t *)A->mem(BATTLE_ID), (uint32_t *)A->mem(BATTLE_ID + 0x38)};
     uint32_t saved[2] = {*ids[0], *ids[1]};
     bool any = false;
+    const size_t scope = g_trigger_scope.size();
     for (int k = 0; k < 2; k++) {
         const auto it = g_trig.find((uint16_t)(saved[k] & 0xffff));
         if (saved[k] > 0x1fff || it == g_trig.end() || !g_trig_battle.count((uint16_t)saved[k])) continue;
         *ids[k] = it->second;
-        g_trig_real[it->second] = (uint16_t)saved[k];
+        if (real_event_ids()) g_trigger_scope.push_back(TriggerSource{it->second, (uint16_t)saved[k], (uint8_t)k,
+            (uint16_t)(*(const uint32_t *)A->mem(BATTLE_ID + 0x38 * k - 4) & 0x1ff)});
+        else g_trig_real[it->second] = (uint16_t)saved[k];
         any = true;
     }
-    if (!any) return 0;
+    if (!any) {
+        static const bool dbg = getenv("TF3_DEBUG_BATTLE") != nullptr;
+        if (!dbg) return 0;
+        const char *nm = fn == F_BATTLE ? "09ea28d8" : "09f28de8";
+        battle_dump("before", nm, A->reg(c, 4)); A->call_original(c, fn); battle_dump("after", nm, A->reg(c, 4));
+        return 1;
+    }
     if (getenv("TF3_DEBUG_FX")) A->log("battle gate: ids %u %u -> %u %u", saved[0], saved[1], *ids[0], *ids[1]);
     A->call_original(c, fn);
+    g_trigger_scope.resize(scope);
     for (int k = 0; k < 2; k++) if (*ids[k] != saved[k] && saved[k] > 0 && g_trig.count((uint16_t)saved[k])) *ids[k] = saved[k];
     return 1;
 }
 static int hk_battle(TfCpu *c) { return battle_gate(c, F_BATTLE); }
 static int hk_battle_dmg(TfCpu *c) { return battle_gate(c, F_BATTLE_DMG); }
+
+/* Reuse the native Goblin Attack Force attack marker and timed position lock.
+ * The draw trigger keeps its own donor; position behavior is independent. */
+static int hk_after_attack_mark(TfCpu *c) {
+    if (*(const uint32_t *)A->mem(0x09f7d4a0) != 1) return 0;
+    const uint32_t side = *(const uint32_t *)A->mem(0x09f77da0);
+    const uint32_t slot = *(const uint32_t *)A->mem(0x09f77dbc);
+    if (side > 1 || slot > 4 || !g_after_attack_defense.count(zone_card(side, slot)) || !zone_effect_active(side, slot)) return 0;
+    call_game6(c, 0x09f2ccb4, side, slot, 0x14d6, 2, 0, 0);
+    return 0;
+}
+
+static int hk_after_attack_defense(TfCpu *c) {
+    if (*(const uint32_t *)A->mem(0x09f7d4a0) != 1) return 0;
+    for (uint32_t side = 0; side < 2; ++side) for (uint32_t slot = 0; slot < 5; ++slot) {
+        const uint16_t id = (uint16_t)zone_card(side, slot);
+        const uint8_t *entry = A->mem(DUEL_SIDES + side * DUEL_SIDE_SIZE + 0x30 + slot * 20);
+        if (!g_after_attack_defense.count(id) || !zone_effect_active(side, slot) || *(const uint16_t *)(entry + 6)) continue;
+        if (!call_game(c, 0x09f465c0, side, slot, 0x14d6, 0)) continue;
+        call_game(c, 0x09f2cec8, side, slot, 0x14d6, 1);
+        const uint32_t token = ((*(const uint16_t *)(entry + 2) & 0x3fff) >> 6) * 2 + ((entry[1] >> 5) & 1);
+        call_game(c, 0x09f289cc, side, slot, token, 0);
+        call_game6(c, 0x09f2dd6c, side, slot, 0, 0, id, 0);
+        call_game6(c, 0x09f2ccb4, side, slot, 0x1419, 0x22, 0, 0);
+    }
+    return 0;
+}
+
+static int hk_event_store(TfCpu *c) {
+    const uint32_t word = A->reg(c, 5);
+    const uint16_t id = (uint16_t)word;
+    uint16_t real = id;
+    for (auto it = g_trigger_scope.rbegin(); it != g_trigger_scope.rend(); ++it)
+        if (it->donor == id && it->side == (word >> 31) &&
+            (it->token == 0xffff || it->token == (A->reg(c, 6) & 0x1ff))) {
+            if (!it->allowed) return 1;
+            real = it->card;
+            break;
+        }
+    const uint32_t bucket = A->reg(c, 4);
+    if (bucket > 1) return 0;
+    const uint32_t turn = *(const uint32_t *)A->mem(0x09f7d460);
+    const bool deferred = *(const uint32_t *)A->mem(0x09f7d47c) != 0 && turn < 2 &&
+        *(const uint32_t *)A->mem(0x09f77888 + turn * 4) == 2;
+    uint16_t token = (uint16_t)A->reg(c, 6);
+    const uint32_t param = A->reg(c, 7);
+    if (deferred && real != id && id) {
+        // Normalize exactly as the native writer does before serializing its packet.
+        if (token < 2) {
+            token = (uint16_t)call_game(c, 0x09f4a5a4, word >> 31, id, 0, 0);
+            A->set_reg(c, 6, token);
+        }
+        g_deferred_sources.push_back({bucket, word, param, token, real});
+    } else if (!deferred && real == id) {
+        for (auto it = g_deferred_sources.begin(); it != g_deferred_sources.end(); ++it) {
+            if (it->bucket != bucket || it->word != word || it->token != token || it->param != param) continue;
+            real = it->card;
+            g_deferred_sources.erase(it);
+            break;
+        }
+    }
+    const uint32_t counter = bucket ? 0x09f78660 : 0x09f78670;
+    const uint32_t before = *(const uint32_t *)A->mem(counter);
+    A->call_original(c, 0x09eb53b0);
+    const uint32_t after = *(const uint32_t *)A->mem(counter);
+    if (after == before + 1 && before < (bucket ? 16u : 32u)) {
+        const uint8_t *o = A->mem((bucket ? 0x09f784e0 : 0x09f781e0) + before * 24);
+        const uint64_t key = event_key(o);
+        if (real != id) g_event_sources[key] = real;
+        else g_event_sources.erase(key);
+        if (getenv("TF3_DEBUG_FX")) A->log("event identity: side %u donor %u source %u token %u", word >> 31, id, real, (unsigned)(key >> 17));
+    }
+    return 1;
+}
 
 /* research aid (TF3_DEBUG_STREAM=1): dumps the card-art stream object when the game queues a read far beyond the file (BOOT 0882ead0:
  * a1 = stream object, a3 = file position; the object keeps the .cip header at +172, the index entries {unit, state} follow at +0x30) */
@@ -1137,9 +1725,45 @@ extern "C" __declspec(dllexport) int tfmod_init(const TfModApi *api) {
     if (const char *fl = getenv("TF3_DEBUG_FN")) fn_log_init(fl);
     if (getenv("TF3_DEBUG_TRIG")) A->hook(F_TRIGGER, hk_trigger_debug);
     else if (!g_trig.empty()) A->hook(F_TRIGGER, hk_trigger);
+    if (!g_trig.empty()) A->hook(0x0884d1b8, hk_flip_kind);
+    if (!g_after_attack_defense.empty()) {
+        A->hook(0x09ea00fc, hk_after_attack_mark);
+        A->hook(0x09ea53f4, hk_after_attack_defense);
+    }
     if (!g_trig_summon.empty()) A->hook(F_POST_ACTION, hk_post_action);
-    if (!g_trig_battle.empty()) { A->hook(F_BATTLE, hk_battle); A->hook(F_BATTLE_DMG, hk_battle_dmg); }
-    if (!g_stat.empty()) A->hook(F_STATS, hk_stats);
+    if (real_event_ids() && !g_trig.empty()) A->hook(0x09eb53b0, hk_event_store);
+    if (!g_trig_battle.empty() || getenv("TF3_DEBUG_BATTLE")) { A->hook(F_BATTLE, hk_battle); A->hook(F_BATTLE_DMG, hk_battle_dmg); }
+    if (!g_stat.empty()) {
+        A->hook(F_STATS, hk_stats);
+        A->hook(0x09eb9fc8, hk_equip_target);
+    }
+    if (!g_equip_level.empty()) A->hook(F_LEVEL, hk_level);
+    if (!g_attack_protect.empty()) A->hook(0x09f5153c, hk_attack_target);
+    if (!g_control_lock.empty()) A->hook(0x09f53358, hk_control);
+    if (slot_of(7000) || gladius_return_enabled() || getenv("TF3_TEST_VENUS_CHAIN")) {
+        A->hook(0x09f454b8, hk_replacement_present);
+        A->hook(0x09f45fec, hk_replacement_equip);
+        A->hook(0x09f3332c, hk_destroy_mark);
+        A->hook(0x09f34d64, hk_destroy_remove);
+        A->hook(0x09f3a730, hk_battle_destroy_replace);
+    }
+    if (sword_return_enabled()) {
+        A->hook(0x09f34044, hk_equipment_cleanup);
+    }
+    if (sabre_mill_enabled()) {
+        A->hook(0x09f2a7ec, hk_sabre_mill);
+        A->hook(0x09f15694, hk_sabre_mill_event);
+    }
+    if (getenv("TF3_TEST_VENUS")) {
+        A->hook(0x09ee55c8, hk_venus_negation);
+        A->hook(0x09ed26d0, hk_venus_effect_negation);
+        A->hook(0x09ed2568, hk_venus_continuous_negation);
+    }
+    if (getenv("TF3_TEST_VENUS_CHAIN")) {
+        A->hook(0x09eb7248, hk_venus_chain);
+        A->hook(0x09f4c490, hk_venus_frontier);
+        A->hook(0x09f4cc24, hk_venus_phoenix);
+    }
     if (getenv("TF3_DEBUG_CAND")) { A->hook(F_CAND_RUN, hk_cand_run_debug); A->hook(F_CAND_COUNT, hk_cand_count_debug); }
     else if (!g_fx.empty()) { A->hook(F_CAND_RUN, hk_cand_run); A->hook(F_CAND_COUNT, hk_cand_count); }
     if (!g_amt.empty()) A->hook(F_DRAW, hk_draw);
