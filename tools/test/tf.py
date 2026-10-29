@@ -14,13 +14,23 @@ Roteiro ("run"): palavras separadas por espaco.
   shot:nome  captura gen/ctl/nome.png neste ponto
 O jogo roda SEM limitador (rapido) e escondido; 1 quadro = 1/30 s do jogo. Usa copia do save em ./ms0 (nunca gen/ms0)."""
 import os, sys, time, subprocess, shutil, glob, re, itertools
+import ctypes
+
+_kernel = ctypes.windll.kernel32
+_kernel.OpenProcess.argtypes = (ctypes.c_ulong, ctypes.c_int, ctypes.c_ulong)
+_kernel.OpenProcess.restype = ctypes.c_void_p
+_kernel.GetExitCodeProcess.argtypes = (ctypes.c_void_p, ctypes.POINTER(ctypes.c_ulong))
+_kernel.GetExitCodeProcess.restype = ctypes.c_int
+_kernel.CloseHandle.argtypes = (ctypes.c_void_p,)
+_kernel.CloseHandle.restype = ctypes.c_int
 
 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 TAG = os.environ.get('TF_TAG', '')   # TF_TAG=name: isolated ctl/logs/plugins folders so two agents can test at once
 CTL = os.path.join(ROOT, 'gen', 'ctl' + ('_' + TAG if TAG else ''))
 BTN = {'X': 0x4000, 'CROSS': 0x4000, 'O': 0x2000, 'CIRCLE': 0x2000, 'SQ': 0x8000, 'SQUARE': 0x8000, 'TRI': 0x1000, 'TRIANGLE': 0x1000,
        'START': 0x8, 'SELECT': 0x1, 'UP': 0x10, 'RIGHT': 0x20, 'DOWN': 0x40, 'LEFT': 0x80, 'L': 0x100, 'R': 0x200}
-RAPIDO = False   # rasterizacao desligada entre capturas (duelo completo em ~1 min em vez de ~7)
+_render_mode = os.path.join(CTL, 'render_mode.txt')
+RAPIDO = os.path.exists(_render_mode) and open(_render_mode).read().strip() == 'fast'
 _n = itertools.count(int(time.time()) % 100000 * 1000)
 
 
@@ -49,8 +59,12 @@ def send(cmd, timeout=600):
 def vivo():
     try: pid = int(open(os.path.join(CTL, 'pid')).read())
     except Exception: return True
-    r = subprocess.run(['tasklist', '/FI', 'PID eq %d' % pid, '/NH'], capture_output=True, text=True)
-    return str(pid) in r.stdout
+    h = _kernel.OpenProcess(0x1000, False, pid)
+    if not h: return False
+    code = ctypes.c_ulong()
+    ok = _kernel.GetExitCodeProcess(h, ctypes.byref(code))
+    _kernel.CloseHandle(h)
+    return bool(ok and code.value == 259)
 
 
 def resumo_crash():
@@ -186,7 +200,7 @@ def start(args):
     shutil.rmtree(CTL, ignore_errors=True); os.makedirs(CTL)
     ini = open(os.path.join(ROOT, 'gen', 'tagforce_recomp.ini'), errors='ignore').read() if os.path.exists(os.path.join(ROOT, 'gen', 'tagforce_recomp.ini')) else ''
     iso = os.environ.get('TF_ISO') or (re.search(r'(?im)^iso=(.*)$', ini).group(1).strip() if re.search(r'(?im)^iso=(.*)$', ini) else '')
-    exe = args[args.index('--exe') + 1] if '--exe' in args else os.path.join('gen', 'pkg', 'TagForceRecomp', 'TagForceRecomp_bg.exe')
+    exe = args[args.index('--exe') + 1] if '--exe' in args else os.environ.get('TF_TEST_EXE') or os.path.join('gen', 'pkg', 'TagForceRecomp', 'TagForceRecomp_bg.exe')
     pkg = os.path.dirname(os.path.join(ROOT, exe))   # the test runs inside the package folder (its own gen/ translated code and ms0/ test save)
     if TAG and os.path.basename(pkg) == 'TagForceRecomp' and os.path.basename(os.path.dirname(pkg)) == 'pkg':
         # TF_TAG: each parallel instance runs in its own copy of the package (the test save ms0/ and the translated code cache live there)
@@ -195,7 +209,7 @@ def start(args):
         if not os.path.exists(os.path.join(tagpkg, 'jogo')) and os.path.isdir(os.path.join(pkg, 'jogo')):
             subprocess.run(['cmd', '/c', 'mklink', '/J', os.path.join(tagpkg, 'jogo'), os.path.realpath(os.path.join(pkg, 'jogo'))], capture_output=True)
         exe = os.path.relpath(os.path.join(tagpkg, os.path.basename(exe)), ROOT); pkg = tagpkg
-    dados = os.path.join(pkg, 'jogo')
+    dados = os.environ.get('TF_TEST_DATA') or os.path.join(pkg, 'jogo')
     if not os.path.isdir(dados) and not os.path.isfile(iso): raise SystemExit('sem dados instalados em %s: rode tools/install_dev.sh ou defina TF_ISO' % dados)
     # save de teste = copia do save do usuario (ou vazio com --fresh); nunca escreve em gen/ms0
     src = save_source()   # pick the source BEFORE deleting pkg/ms0: with --exe pointing at the root exe, pkg/ms0 IS the player's live save
@@ -228,6 +242,8 @@ def start(args):
     open(os.path.join(CTL, 'pid'), 'w').write(str(p.pid))
     global RAPIDO
     RAPIDO = '--rapido' in args
+    # A later CLI invocation must redraw fast sessions before taking a screenshot.
+    with open(_render_mode, 'w') as f: f.write('fast' if RAPIDO else 'full')
     t0 = time.time()
     while time.time() - t0 < 180:
         if p.poll() is not None: raise SystemExit('o jogo fechou ao iniciar; veja gen/ctl/log.txt')
