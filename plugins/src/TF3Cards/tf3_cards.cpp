@@ -898,8 +898,9 @@ static int hk_effect_record(TfCpu *c) {   /* looks the record up as the card it 
  */
 static const uint32_t F_CAND_RUN = 0x09f243c8, F_CAND_COUNT = 0x09f24428, F_CAND_ADD = 0x09f240b4;
 static const uint32_t CAND_COUNTER = 0x09f80000u - 28440u;
-struct DataEffect { uint8_t zone; std::vector<uint16_t> ids; };
+struct DataEffect { uint8_t zone, extra; std::vector<uint16_t> ids; };   /* extra: further cards of the same zone moved to the hand after the picked one */
 static std::map<uint16_t, DataEffect> g_fx;
+static const DataEffect *g_pick_extra;   /* the data effect whose card list was last offered to the player */
 
 static void fx_load(void) {
     const std::wstring p = std::wstring(A->mod_dir) + L"\\effects.bin";
@@ -910,7 +911,7 @@ static void fx_load(void) {
         for (uint32_t i = 0; i < h[1]; i++) {
             uint16_t id; uint8_t zone, pad; uint32_t n;
             if (fread(&id, 2, 1, f) != 1 || fread(&zone, 1, 1, f) != 1 || fread(&pad, 1, 1, f) != 1 || fread(&n, 4, 1, f) != 1 || n > 0x10000) break;
-            DataEffect e{zone, std::vector<uint16_t>(n)};
+            DataEffect e{zone, pad, std::vector<uint16_t>(n)};
             if (n && fread(e.ids.data(), 2, n, f) != n) break;
             g_fx[id] = std::move(e);
         }
@@ -947,10 +948,11 @@ static uint16_t fx_card(uint16_t id, uint32_t side) {   /* the card whose data e
 
 static int hk_cand_run(TfCpu *c) {   /* (side, effect card id, step): the queue starts empty; returns how many cards were queued */
     const auto it = g_fx.find(fx_card((uint16_t)A->reg(c, 5), A->reg(c, 4) & 1));
-    if (it == g_fx.end()) return 0;
+    if (it == g_fx.end()) { g_pick_extra = nullptr; return 0; }
     uint32_t *ctr = (uint32_t *)A->mem(CAND_COUNTER);
     *ctr = 0;
     fx_scan(c, A->reg(c, 4), A->reg(c, 6), it->second);
+    g_pick_extra = (it->second.extra && (it->second.zone == 1 || it->second.zone == 2)) ? &it->second : nullptr;
     A->set_reg(c, 2, *ctr);
     return 1;
 }
@@ -963,6 +965,41 @@ static int hk_cand_count(TfCpu *c) {   /* same scan, but only counts: the queue 
     fx_scan(c, A->reg(c, 4), A->reg(c, 6), it->second);
     A->set_reg(c, 2, *ctr - before);
     *ctr = before;
+    return 1;
+}
+
+/* 09f3aa3c(effect, a1, a2, buffer): the step that moves the card the player picked (global reference u16 at 09f788c2: bit 0 side, bits 1-5 zone kind, bits 6+ index)
+ * from the Graveyard / Deck to the hand. After it, an effect with `count` > 1 repeats the step for the next matching cards of the same zone (the first ones in
+ * zone order) by writing their reference into the global. */
+static const uint32_t F_MOVE_PICKED = 0x09f3aa3c, PICK_REF = 0x09f80000u - 30526u, MOVE_PHASE = 0x09f80000u - 28464u;   /* the step runs in phases 0, 1, 2; phase 2 does the move */
+static int hk_move_to_hand(TfCpu *c) {
+    const DataEffect *e = g_pick_extra;
+    if (getenv("TF3_DEBUG_FX")) A->log("move step: a1 %x a2 %x phase %u refs %04x %04x %04x pending %d", A->reg(c, 5), A->reg(c, 6), *(const uint32_t *)A->mem(MOVE_PHASE), *(const uint16_t *)A->mem(PICK_REF), *(const uint16_t *)A->mem(PICK_REF + 2), *(const uint16_t *)A->mem(PICK_REF + 4), e != nullptr);
+    if (!e || *(const uint32_t *)A->mem(MOVE_PHASE) != 1) return 0;
+    const uint16_t ref = *(const uint16_t *)A->mem(PICK_REF);
+    const uint32_t kind = (ref >> 1) & 31, side = ref & 1;
+    if (kind != (e->zone == 1 ? 13u : 14u)) return 0;
+    g_pick_extra = nullptr;
+    const uint32_t a[4] = {A->reg(c, 4), A->reg(c, 5), A->reg(c, 6), A->reg(c, 7)};
+    A->call_original(c, F_MOVE_PICKED);
+    const uint32_t result = A->reg(c, 2);
+    const uint32_t phase = *(const uint32_t *)A->mem(MOVE_PHASE);
+    const uint16_t dest = *(const uint16_t *)A->mem(PICK_REF + 2);
+    const uint32_t base = DUEL_SIDES + side * DUEL_SIDE_SIZE, off = e->zone == 1 ? 928 : 1808;
+    for (uint32_t k = 0; k < e->extra; k++) {
+        const uint32_t n = *(const uint32_t *)A->mem(base + (e->zone == 1 ? 16 : 20));
+        uint32_t i = 0;
+        while (i < n && i < 160 && !std::binary_search(e->ids.begin(), e->ids.end(), (uint16_t)(*(const uint16_t *)A->mem(base + off + i * 4) & 0x1fff))) i++;
+        if (i >= n || i >= 160) break;
+        *(uint16_t *)A->mem(PICK_REF) = (uint16_t)((i << 6) | (kind << 1) | side);   /* source; the next halfword is the destination: the next free hand slot */
+        *(uint16_t *)A->mem(PICK_REF + 2) = (uint16_t)((*(const uint32_t *)A->mem(base + 12) << 6) | (11 << 1) | side);
+        *(uint32_t *)A->mem(MOVE_PHASE) = 1;
+        const uint32_t r = call_game(c, F_MOVE_PICKED, a[0], a[1], a[2], a[3]);
+        if (getenv("TF3_DEBUG_FX")) A->log("extra pick %u: zone index %u -> result %u, hand %u", k, i, r, *(const uint32_t *)A->mem(base + 12));
+    }
+    *(uint16_t *)A->mem(PICK_REF) = ref; *(uint16_t *)A->mem(PICK_REF + 2) = dest;
+    *(uint32_t *)A->mem(MOVE_PHASE) = phase;
+    A->set_reg(c, 2, result);
     return 1;
 }
 
@@ -1797,7 +1834,7 @@ extern "C" __declspec(dllexport) int tfmod_init(const TfModApi *api) {
         A->hook(0x09f4cc24, hk_venus_phoenix);
     }
     if (getenv("TF3_DEBUG_CAND")) { A->hook(F_CAND_RUN, hk_cand_run_debug); A->hook(F_CAND_COUNT, hk_cand_count_debug); }
-    else if (!g_fx.empty()) { A->hook(F_CAND_RUN, hk_cand_run); A->hook(F_CAND_COUNT, hk_cand_count); }
+    else if (!g_fx.empty()) { A->hook(F_CAND_RUN, hk_cand_run); A->hook(F_CAND_COUNT, hk_cand_count); A->hook(F_MOVE_PICKED, hk_move_to_hand); }
     if (!g_amt.empty()) A->hook(F_DRAW, hk_draw);
     A->hook(F_LP_AMOUNTS, hk_lp_amounts);
     A->hook(F_EFFECT_DRIVER, hk_effect_driver);

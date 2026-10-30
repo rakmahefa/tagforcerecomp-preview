@@ -8,7 +8,8 @@ Spec file (tools/mods/tf3_efeitos.json): { "<TF3 card id>": {"like": <TF1 card i
           "grave_summon": Graveyard cards that can be Special Summoned (Call of the Haunted, 4989); "hand": Special Summon from the hand (Magnet Circle LV2, 6572)
   filter  monster (bool), normal (bool: no effect), level_min, level_max, type (name or number), attribute (name or number),
           atk_min, atk_max, def_min, def_max, name_has (substring of the English name, case-insensitive), name_is (exact English name)
-Output: effects.bin = "TF3E", u32 n, then per card: u16 duel id, u8 zone, u8 0, u32 count, u16 ids[count] (sorted).
+  count   (deck / grave zones) how many cards the effect moves to the hand: the game picks the first, the plugin moves count-1 more matching ones
+Output: effects.bin = "TF3E", u32 n, then per card: u16 duel id, u8 zone, u8 extra picks (count - 1), u32 count, u16 ids[count] (sorted).
 """
 import json
 import os
@@ -88,7 +89,7 @@ def resolver(gids, spec=None):
         if "zone" not in e:      # only borrows the record (equip cards: the rule that gives the bonus is in stat.bin)
             continue
         ids = sorted(i for i, p in prop.items() if combina(p, e["filter"]))
-        entradas.append(struct.pack("<HBBI", gids[cid], ZONAS[e["zone"]], 0, len(ids)) + struct.pack("<%dH" % len(ids), *ids))
+        entradas.append(struct.pack("<HBBI", gids[cid], ZONAS[e["zone"]], max(int(e.get("count", 1)) - 1, 0), len(ids)) + struct.pack("<%dH" % len(ids), *ids))
     return b"TF3E" + struct.pack("<I", len(entradas)) + b"".join(entradas), likes
 
 
