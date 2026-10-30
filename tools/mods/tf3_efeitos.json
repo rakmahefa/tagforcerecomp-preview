@@ -189,5 +189,7 @@
  "7166": {"like": 4844, "draw": {"self": 0, "discard": {"count": 1}, "mill": {"count": 4, "filter": {"monster": true, "type": "reptile"}}}, "name": "Snake Rain"},
  "7385": {"like": 5484, "trigger_like": 5484, "destroy": {"side": "both", "zones": "all", "cond": {"kind": "target", "filter": {"monster": true}}}, "name": "Grave Squirmer"},
  "7439": {"like": 5139, "trigger_like": 5139, "trigger_event": "summon", "destroy": {"side": "both", "zones": "monster", "cond": {"kind": "target_all", "filter": {"monster": true, "type": "machine"}}}, "name": "Magnetic Mosquito"},
- "7389": {"like": 4844, "draw": {"self": 2, "opp": 2, "discard": {"count": 2, "both": true}}, "name": "Hand Destruction"}
+ "7389": {"like": 4844, "draw": {"self": 2, "opp": 2, "discard": {"count": 2, "both": true}}, "name": "Hand Destruction"},
+ "7769": {"like": 5210, "draw": {"self": 0, "mill": {"count": 5}}, "name": "Needlebug Nest"},
+ "7479": {"like": 5210, "draw": {"self": 0, "discard": {"count": 2}}, "name": "Fine"}
 }
