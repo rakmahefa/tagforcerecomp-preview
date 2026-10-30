@@ -177,5 +177,6 @@
  "7011": {"like": 4342, "destroy": {"side": "both", "zones": "monster", "cond": {"kind": "target", "filter": {"monster": true, "category_in": [2, 3]}}}, "name": "Anti-Fusion Device"},
  "7012": {"like": 4342, "destroy": {"side": "both", "zones": "monster", "cond": {"kind": "target", "filter": {"monster": true, "category_in": [4, 5]}}}, "name": "Ritual Sealing"},
  "7739": {"like": 4310, "name": "Fighting Spirit"},
- "7494": {"like": 4310, "name": "Assault Armor"}
+ "7494": {"like": 4310, "name": "Assault Armor"},
+ "7312": {"like": 5330, "zone": "grave", "count": 3, "to": "deck", "then_draw": 1, "filter": {"monster": true, "name_has": "Gladiator Beast"}, "name": "Gladiator's Return"}
 }

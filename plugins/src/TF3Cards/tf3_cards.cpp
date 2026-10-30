@@ -906,7 +906,7 @@ static int hk_effect_record(TfCpu *c) {   /* looks the record up as the card it 
  */
 static const uint32_t F_CAND_RUN = 0x09f243c8, F_CAND_COUNT = 0x09f24428, F_CAND_ADD = 0x09f240b4;
 static const uint32_t CAND_COUNTER = 0x09f80000u - 28440u;
-struct DataEffect { uint8_t zone, extra; std::vector<uint16_t> ids; };   /* extra: further cards of the same zone moved to the hand after the picked one */
+struct DataEffect { uint8_t zone, extra, to_deck, draw; std::vector<uint16_t> ids; };   /* extra: further cards of the same zone moved to the hand after the picked one */
 static std::map<uint16_t, DataEffect> g_fx;
 static const DataEffect *g_pick_extra;   /* the data effect whose card list was last offered to the player */
 
@@ -919,7 +919,7 @@ static void fx_load(void) {
         for (uint32_t i = 0; i < h[1]; i++) {
             uint16_t id; uint8_t zone, pad; uint32_t n;
             if (fread(&id, 2, 1, f) != 1 || fread(&zone, 1, 1, f) != 1 || fread(&pad, 1, 1, f) != 1 || fread(&n, 4, 1, f) != 1 || n > 0x10000) break;
-            DataEffect e{zone, pad, std::vector<uint16_t>(n)};
+            DataEffect e{(uint8_t)(zone & 15), pad, (uint8_t)((zone >> 4) & 1), (uint8_t)(zone >> 5), std::vector<uint16_t>(n)};
             if (n && fread(e.ids.data(), 2, n, f) != n) break;
             g_fx[id] = std::move(e);
         }
@@ -960,7 +960,7 @@ static int hk_cand_run(TfCpu *c) {   /* (side, effect card id, step): the queue 
     uint32_t *ctr = (uint32_t *)A->mem(CAND_COUNTER);
     *ctr = 0;
     fx_scan(c, A->reg(c, 4), A->reg(c, 6), it->second);
-    g_pick_extra = (it->second.extra && (it->second.zone == 1 || it->second.zone == 2)) ? &it->second : nullptr;
+    g_pick_extra = ((it->second.extra || it->second.to_deck || it->second.draw) && (it->second.zone == 1 || it->second.zone == 2)) ? &it->second : nullptr;
     A->set_reg(c, 2, *ctr);
     return 1;
 }
@@ -989,6 +989,8 @@ static int hk_move_to_hand(TfCpu *c) {
     if (kind != (e->zone == 1 ? 13u : 14u)) return 0;
     g_pick_extra = nullptr;
     const uint32_t a[4] = {A->reg(c, 4), A->reg(c, 5), A->reg(c, 6), A->reg(c, 7)};
+    const uint32_t deck_ref_base = DUEL_SIDES + side * DUEL_SIDE_SIZE;
+    if (e->to_deck) *(uint16_t *)A->mem(PICK_REF + 2) = (uint16_t)((*(const uint32_t *)A->mem(deck_ref_base + 16) << 6) | (13 << 1) | side);
     A->call_original(c, F_MOVE_PICKED);
     const uint32_t result = A->reg(c, 2);
     const uint32_t phase = *(const uint32_t *)A->mem(MOVE_PHASE);
@@ -1000,12 +1002,14 @@ static int hk_move_to_hand(TfCpu *c) {
         while (i < n && i < 160 && !std::binary_search(e->ids.begin(), e->ids.end(), (uint16_t)(*(const uint16_t *)A->mem(base + off + i * 4) & 0x1fff))) i++;
         if (i >= n || i >= 160) break;
         *(uint16_t *)A->mem(PICK_REF) = (uint16_t)((i << 6) | (kind << 1) | side);   /* source; the next halfword is the destination: the next free hand slot */
-        *(uint16_t *)A->mem(PICK_REF + 2) = (uint16_t)((*(const uint32_t *)A->mem(base + 12) << 6) | (11 << 1) | side);
+        *(uint16_t *)A->mem(PICK_REF + 2) = e->to_deck ? (uint16_t)((*(const uint32_t *)A->mem(base + 16) << 6) | (13 << 1) | side)
+                                                       : (uint16_t)((*(const uint32_t *)A->mem(base + 12) << 6) | (11 << 1) | side);
         *(uint32_t *)A->mem(MOVE_PHASE) = 1;
         const uint32_t r = call_game(c, F_MOVE_PICKED, a[0], a[1], a[2], a[3]);
         if (getenv("TF3_DEBUG_FX")) A->log("extra pick %u: zone index %u -> result %u, hand %u", k, i, r, *(const uint32_t *)A->mem(base + 12));
     }
     *(uint16_t *)A->mem(PICK_REF) = ref; *(uint16_t *)A->mem(PICK_REF + 2) = dest;
+    if (e->draw) call_game(c, F_DRAW_CARDS, side, e->draw, 0, 0);
     *(uint32_t *)A->mem(MOVE_PHASE) = phase;
     A->set_reg(c, 2, result);
     return 1;
