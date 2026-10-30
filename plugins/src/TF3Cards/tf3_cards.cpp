@@ -776,6 +776,12 @@ static int hk_draw(TfCpu *c) {
 struct DestroyRule { uint8_t side, zones, cond, param; std::vector<uint16_t> ids; };   /* side: 1 own, 2 opponent, 3 both; zones: 1 monsters, 2 Spell / Trap, 3 both */
 static std::map<uint16_t, DestroyRule> g_destroy;
 static int g_destroy_taken = 0;                                  /* cards a "destroy 1" rule has already picked while resolving */
+static std::map<uint16_t, DestroyRule>::iterator destroy_find(uint32_t obj) {   /* the rule of the effect object's own id, or of the card a trigger alias stands for (FLIP / battle monsters answer with the donor's id) */
+    const uint8_t *o = A->mem(obj);
+    auto it = g_destroy.find(*(const uint16_t *)o);
+    if (it == g_destroy.end()) it = g_destroy.find(trigger_card(*(const uint16_t *)o, o[2] & 1, obj));
+    return it;
+}
 static bool g_destroying = false;                                /* true while the driver resolves a rule's card: the condition was checked when the card was activated */
 
 static bool is_card(uint32_t obj, uint16_t tf3) {
@@ -786,7 +792,7 @@ static bool is_card(uint32_t obj, uint16_t tf3) {
 
 static int hk_effect_driver(TfCpu *c) {
     const uint32_t obj = A->reg(c, 4);
-    if (obj >= 0x08000000u && obj <= 0x0a000000u - 0x20 && g_destroy.count(*(const uint16_t *)A->mem(obj))) {
+    if (obj >= 0x08000000u && obj <= 0x0a000000u - 0x20 && destroy_find(obj) != g_destroy.end()) {
         g_destroying = true; g_destroy_taken = 0;
         A->call_original(c, F_EFFECT_DRIVER);
         g_destroying = false;
@@ -859,7 +865,7 @@ static int hk_target_all(TfCpu *c) {   /* a0 = effect object, a1 = side, a2 = zo
     static const bool dbg0 = getenv("TF3_DEBUG_FX") != nullptr;
     if (dbg0 && obj >= 0x08000000u && obj <= 0x0a000000u - 0x20 && A->reg(c, 6) == 0) A->log("target filter %08x: object id %u side %u", A->reg(c, 31), (unsigned)*(const uint16_t *)A->mem(obj), A->reg(c, 5));
     if (obj >= 0x08000000u && obj <= 0x0a000000u - 0x20) {
-        const auto d = g_destroy.find(*(const uint16_t *)A->mem(obj));
+        const auto d = destroy_find(obj);
         if (d != g_destroy.end()) {
             const DestroyRule &r = d->second;
             const uint32_t own = A->mem(obj)[2] & 1, side = A->reg(c, 5) & 1, zone = A->reg(c, 6);
@@ -867,10 +873,16 @@ static int hk_target_all(TfCpu *c) {   /* a0 = effect object, a1 = side, a2 = zo
             static const bool dbg = getenv("TF3_DEBUG_FX") != nullptr;
             if (dbg) A->log("destroy filter of id %u: side %u zone %u resolving %d -> %s", (unsigned)*(const uint16_t *)A->mem(obj), side, zone, (int)g_destroying, ok ? "ask the game" : "no");
             if (!ok) { A->set_reg(c, 2, 0); return 1; }
-            if (r.cond == 6 && zone < 5) {   /* "Destroy 1 face-up <filter> monster": only face-up monsters of the id set are targets, and only the first one is destroyed */
+            if ((r.cond == 6 || r.cond == 7) && zone < 5) {   /* "Destroy 1 face-up <filter> monster": only face-up monsters of the id set are targets, and only the first one is destroyed */
                 const uint32_t id = zone_card(side, zone);
                 bool hit = id && std::binary_search(r.ids.begin(), r.ids.end(), (uint16_t)id);
-                if (hit && g_destroying && g_destroy_taken++ >= 1) hit = false;
+                if (hit && r.cond == 6 && g_destroying && g_destroy_taken++ >= 1) hit = false;
+                A->set_reg(c, 2, hit);
+                return 1;
+            }
+            if ((r.cond == 6 || r.cond == 7) && zone >= 5 && zone < 11) {   /* "Destroy 1 Spell / Trap Card": any card there is a target (cond 6: the first one only while resolving) */
+                bool hit = (*(const uint16_t *)A->mem(DUEL_SIDES + side * DUEL_SIDE_SIZE + 0x30 + 20 * zone) & 0x1fff) != 0;
+                if (hit && r.cond == 6 && g_destroying && g_destroy_taken++ >= 1) hit = false;
                 A->set_reg(c, 2, hit);
                 return 1;
             }
@@ -1932,7 +1944,7 @@ extern "C" __declspec(dllexport) int tfmod_init(const TfModApi *api) {
     A->hook(F_LP_AMOUNTS, hk_lp_amounts);
     A->hook(F_EFFECT_DRIVER, hk_effect_driver);
     A->hook(F_TARGET_ALL, hk_target_all);
-    if (!g_destroy.empty()) { A->hook(F_TARGET_OPP, hk_target_all); A->hook(F_TARGET_ST, hk_target_all); A->hook(F_TARGET_ATK, hk_target_all); A->hook(F_ATTACK_TRIGGER, hk_attack_trigger); }
+    if (!g_destroy.empty()) { A->hook(F_TARGET_OPP, hk_target_all); A->hook(F_TARGET_ST, hk_target_all); A->hook(F_TARGET_ATK, hk_target_all); A->hook(0x09ebc0a8, hk_target_all); A->hook(0x09ebfe68, hk_target_all); A->hook(F_ATTACK_TRIGGER, hk_attack_trigger); }
     if (getenv("TF3_DEBUG_STREAM")) A->hook(0x0882ead0, hk_debug_stream);
     if (getenv("TF3_DEBUG_OBJ")) A->hook(0x0882ead0, hk_debug_obj);
     if (getenv("TF3_DEBUG_REQ")) A->hook(0x0882ead0, hk_debug_req);
