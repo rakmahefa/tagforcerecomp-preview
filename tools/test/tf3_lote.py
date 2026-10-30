@@ -41,6 +41,8 @@ ROTEIROS = {
     'ativar_sel': PRE + "X w100 shot:d3 X w200 shot:d4 X w400 shot:d5 X w300 shot:d6 X w300 shot:d7 estado:fim",
     # same as ativar_sel, dumping the hand / Graveyard words of player 0 before and after (research aid)
     'ativar_dump': PRE + "peek:09f79e0c:30 peek:09f7a3fc:20 peek:09f79cec:30 X w100 shot:d3 X w200 shot:d4 X w400 shot:d5 X w300 shot:d6 X w300 shot:d7 peek:09f79e0c:30 peek:09f7a3fc:20 peek:09f79cec:30 estado:fim",
+    # Set the first hand card (a Trap), end the turn (phase bar: RIGHT twice = End Phase), answer YES to the chain prompt of the opponent's attack on turn 4
+    'armadilha': PRE + "X w300 shot:t1 O w60 RIGHT w60 RIGHT w60 X w200 w3000 shot:t5 X w400 shot:t6 X w400 shot:t7 X w400 shot:t8 w600 estado:fim",
     # summon it, Battle Phase, attack the first target; stops at the "Activate the effect?" prompt if there is one
     'atacar': PRE + "X w300 O w60 RIGHT w20 X w100 X w100 X w100 X w700 shot:d3 estado:fim",
     # same, answers YES, picks the first card / position offered and lets the effect finish
