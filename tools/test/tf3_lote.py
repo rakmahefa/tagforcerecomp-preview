@@ -5,12 +5,13 @@ The state is read with peek (no screenshots): life points, deck size, hand and m
 Results: gen/lote/<card id>/ (state.json, screenshots, the log), gen/lote/folha.png (contact sheet) and one PASS / FAIL line per case when --check is given.
 
 Usage:  python tools/test/tf3_lote.py [-j 8, never above 8: 10 pinned the CPU at 100%] [--mods gen/tf3sum] [--rot ativar|atacar|atacar_sim|<script>]
-            [--spec file.json | '{"6960": {...}}'] [--check "fim.me.deck < ini.me.deck"]... [--grave auto|id,id,...] [--rapido] [--fn 09ebcce8,...] [--debug-fx] ID [ID ...]
+            [--spec file.json | '{"6960": {...}}'] [--check "fim.me.deck < ini.me.deck"]... [--grave auto|id,id,...] [--hand id,id,...] [--rapido] [--fn 09ebcce8,...] [--debug-fx] ID [ID ...]
   ID           TF3 card id (column 2 of ported.txt) forced into the hand
   --rot        a name of ROTEIROS or a tf.py script (words: X O RIGHT w60 shot:name estado:name ...)
   --spec       temporary effect specs for this run only (a JSON file or inline JSON, same shape as tools/mods/tf3_efeitos.json; {"effects": {...}, "stats": {...}} also accepted);
                every case gets its own pack folder (hard links), the project files are not touched
   --grave      seed your Graveyard before the script: 'auto' = up to 3 original cards that match the card's spec filter, or a list of card ids
+  --hand       write these card ids over hand slots 3, 4, ... of your hand (slots 0-2 hold the forced card): for discard costs
   --rapido     experimental fast mode (no screenshots): the duel is not the same as in full mode and the waits drift, so the script may not reach turn 3
   --check      python expression over the states ini and fim (attributes: me / op -> lp, deck, hand, n_hand, field); repeatable
                e.g. "fim.op.lp < ini.op.lp"  "fim.me.deck == ini.me.deck - 1"  "fim.me.n_hand > ini.me.n_hand"
@@ -153,8 +154,11 @@ def poke_cemiterio(cid, mods, spec, grave):
     return ' '.join(words) + ' '
 
 
-def um(cid, mods, extra, rot, spec, checks, shots, grave=None):
+def um(cid, mods, extra, rot, spec, checks, shots, grave=None, mao=None):
     tag = 'l%s' % cid
+    if mao:   # --hand: ids written over hand slots 3, 4, ... (slots 0-2 hold the forced card)
+        words = ['poke:%08x:%s' % (JOG + 0x120 + 4 * (3 + k), struct.pack('<I', int(i)).hex()) for k, i in enumerate(mao.split(','))]
+        rot = rot.replace('estado:ini', ' '.join(words) + ' estado:ini', 1)
     if grave:
         rot = rot.replace('estado:ini', poke_cemiterio(cid, mods, spec, grave) + 'estado:ini', 1)
     if spec:
@@ -250,11 +254,11 @@ def main():
         extra['TF3_DEBUG_FN'] = a[a.index('--fn') + 1]; extra['TF3_DEBUG_FN_ALL'] = '1'
     if '--debug-fx' in a:
         extra['TF3_DEBUG_FX'] = '1'
-    skip = {'-j', '--mods', '--fn', '--rot', '--spec', '--check', '--grave'}
+    skip = {'-j', '--mods', '--fn', '--rot', '--spec', '--check', '--grave', '--hand'}
     ids = [x for i, x in enumerate(a) if x.isdigit() and (i == 0 or a[i - 1] not in skip)]
     falhas = 0
     with ThreadPoolExecutor(j) as ex:
-        for cid, estados, res in ex.map(lambda c: um(c, mods, extra, rot, spec, checks, shots, opt('--grave')), ids):
+        for cid, estados, res in ex.map(lambda c: um(c, mods, extra, rot, spec, checks, shots, opt('--grave'), opt('--hand')), ids):
             print('done', resumo(cid, estados), flush=True)
             for c, ok in res:
                 print('   %s  %s' % ('PASS' if ok else 'FAIL', c), flush=True); falhas += not ok

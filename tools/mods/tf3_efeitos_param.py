@@ -135,10 +135,12 @@ def resolver_valores(gids, spec=None):
     Spec keys: "draw": {"self": N, "opp": N}  cards drawn by the card's controller / by the other player;
                "lp": {"self": N, "opp": N}    life point change of each side (positive = gain, negative = damage)
     Either may carry "per": {"side": own|opp|both, "filter": {...}, "distinct": bool}: the numbers are multiplied by how many face-up monsters of that side
-    match the filter (distinct = counting different card ids only)"""
+    match the filter (distinct = counting different card ids only)
+    Either may carry "discard": {"count": N, "filter": {...}}: a cost - N matching cards of the controller's hand are sent to the Graveyard first; if the hand has
+    fewer, nothing is drawn / gained"""
     if spec is None:
         spec = _carregar(SPEC_AUTO, SPEC)
-    out, per = [], []
+    out, per, cost = [], [], []
     prop = None
     for k, e in sorted(spec.items(), key=lambda x: int(x[0])):
         if int(k) not in gids:
@@ -146,13 +148,19 @@ def resolver_valores(gids, spec=None):
         for kind, code in KIND_VALUES.items():
             if kind in e:
                 out.append(struct.pack("<HBBii", gids[int(k)], code, 0, e[kind].get("self", 0), e[kind].get("opp", 0)))
+                d = e[kind].get("discard")
+                if d:
+                    prop = prop or propriedades(gids)
+                    ids = sorted(i for i, q in prop.items() if combina(q, d.get("filter", {})))
+                    cost.append(struct.pack("<HBBH", gids[int(k)], code, d.get("count", 1), len(ids)) + struct.pack("<%dH" % len(ids), *ids))
                 p = e[kind].get("per")
                 if p:
                     prop = prop or propriedades(gids)
                     ids = sorted(i for i, q in prop.items() if combina(q, p.get("filter", {})))
                     flags = (1 if p.get("distinct") else 0) | (LADOS_POR[p.get("side", "own")] << 1)
                     per.append(struct.pack("<HBBH", gids[int(k)], code, flags, len(ids)) + struct.pack("<%dH" % len(ids), *ids))
-    return b"TF3V" + struct.pack("<I", len(out)) + b"".join(out) + b"TF3M" + struct.pack("<I", len(per)) + b"".join(per)
+    return b"TF3V" + struct.pack("<I", len(out)) + b"".join(out) + b"TF3M" + struct.pack("<I", len(per)) + b"".join(per) \
+        + b"TF3C" + struct.pack("<I", len(cost)) + b"".join(cost)
 
 
 LADOS_DESTRUIR = {"own": 1, "opp": 2, "both": 3}

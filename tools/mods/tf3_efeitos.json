@@ -181,5 +181,7 @@
  "7312": {"like": 5330, "zone": "grave", "count": 3, "to": "deck", "then_draw": 1, "filter": {"monster": true, "name_has": "Gladiator Beast"}, "name": "Gladiator's Return"},
  "7789": {"like": 5330, "zone": "grave", "count": 3, "to": "deck", "then_draw": 2, "filter": {"monster": true, "type": "psychic"}, "name": "Psychic Overload"},
  "7131": {"like": 5330, "zone": "grave", "count": 3, "to": "deck", "filter": {"monster": true, "name_has": "Volcanic"}, "name": "Volcanic Recharge"},
- "7767": {"like": 4986, "lp": {"self": 1000, "per": {"side": "own", "filter": {"monster": true, "type": "psychic"}}}, "name": "Psychic Rejuvenation"}
+ "7767": {"like": 4986, "lp": {"self": 1000, "per": {"side": "own", "filter": {"monster": true, "type": "psychic"}}}, "name": "Psychic Rejuvenation"},
+ "7248": {"like": 4844, "draw": {"self": 2, "discard": {"count": 1, "filter": {"monster": true, "level_min": 8, "level_max": 8}}}, "name": "Trade-In"},
+ "6950": {"like": 4844, "draw": {"self": 2, "discard": {"count": 1, "filter": {"name_has": "Destiny Hero"}}}, "name": "Destiny Draw"}
 }

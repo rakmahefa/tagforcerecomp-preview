@@ -78,6 +78,8 @@ struct Amount { int32_t self, opp; };
 static std::map<std::pair<uint16_t, uint8_t>, Amount> g_amt;
 struct AmountPer { uint8_t flags; std::vector<uint16_t> ids; };   /* flags: bit 0 count different ids only, bits 1-2 side (0 own, 1 opponent, 2 both) */
 static std::map<std::pair<uint16_t, uint8_t>, AmountPer> g_amt_per;
+struct AmountCost { uint8_t count; std::vector<uint16_t> ids; };   /* discard `count` hand cards of these ids as the cost; none if the hand has too few */
+static std::map<std::pair<uint16_t, uint8_t>, AmountCost> g_amt_cost;
 static uint32_t zone_card(uint32_t side, uint32_t slot);
 static Amount amount_scaled(const Amount *am, uint16_t id, uint8_t kind, uint32_t side, uint32_t object) {   /* the amount times its "per" count of monsters, when it has one */
     auto it = g_amt_per.find({id, kind});
@@ -123,6 +125,14 @@ static void amt_load(void) {
             AmountPer r{flags, std::vector<uint16_t>(cnt)};
             if (cnt && fread(r.ids.data(), 2, cnt, f) != cnt) break;
             g_amt_per[{id, kind}] = std::move(r);
+        }
+    if (fread(tag, 1, 4, f) == 4 && !memcmp(tag, "TF3C", 4) && fread(&n, 4, 1, f) == 1)   /* discard costs */
+        for (uint32_t i = 0; i < n; i++) {
+            uint16_t id, cnt; uint8_t kind, need;
+            if (fread(&id, 2, 1, f) != 1 || fread(&kind, 1, 1, f) != 1 || fread(&need, 1, 1, f) != 1 || fread(&cnt, 2, 1, f) != 1) break;
+            AmountCost r{need, std::vector<uint16_t>(cnt)};
+            if (cnt && fread(r.ids.data(), 2, cnt, f) != cnt) break;
+            g_amt_cost[{id, kind}] = std::move(r);
         }
     fclose(f);
     A->log("TF3 Cards: %u draw / life point amounts loaded", (unsigned)g_amt.size());
@@ -695,6 +705,22 @@ static uint32_t call_game6(TfCpu *c, uint32_t fn, uint32_t a0, uint32_t a1, uint
     return result;
 }
 
+/* Discard cost: moves `count` matching cards of the player's hand to the Graveyard with the engine's own steps (09f4be50 removes the card from the hand zone
+ * into the record at 09f788d8, 09f4bff8 adds the record to the Graveyard). Returns false (and moves nothing) when the hand has too few matching cards. */
+static bool discard_cost(TfCpu *c, uint32_t side, const AmountCost &cost) {
+    const uint32_t base = 0x09f80000u - 25364u + side * 4012u;   /* the player block: see DUEL_SIDES */
+    std::vector<uint32_t> pick;
+    const uint32_t hand = *(const uint32_t *)A->mem(base + 12);
+    for (uint32_t i = 0; i < hand && i < 20 && pick.size() < cost.count; i++)
+        if (std::binary_search(cost.ids.begin(), cost.ids.end(), (uint16_t)(*(const uint32_t *)A->mem(base + 0x120 + i * 4) & 0x1fff))) pick.push_back(i);
+    if (pick.size() < cost.count) return false;
+    for (size_t k = pick.size(); k-- > 0;) {   /* highest index first: the lower ones keep their place */
+        call_game(c, 0x09f4be50u, side, 11, pick[k], 0);
+        call_game(c, 0x09f4bff8u, side, 14, *(const uint32_t *)A->mem(base + 20), 0x09f80000u - 28456u);
+    }
+    return true;
+}
+
 /* libduel_eng 09ee56a0: the resolution of the draw effects (Pot of Greed and others). It decides by card id how many cards are drawn and by whom, then calls
  * 09f2a3fc(player, count). For the cards of amount.bin it draws the listed numbers: self = the card's controller, opp = the other player. */
 static const uint32_t F_DRAW = 0x09ee56a0, F_DRAW_CARDS = 0x09f2a3fc;
@@ -705,7 +731,12 @@ static int hk_draw(TfCpu *c) {
     const Amount *am = amount_of(*(const uint16_t *)o, 1, o[2] & 1, obj);
     if (!am) return 0;
     const uint32_t side = (uint32_t)((o[2] & 1) ^ ((o[3] & 0x7f) >> 6));
-    const Amount n = amount_scaled(am, *(const uint16_t *)o, 1, o[2] & 1, obj);
+    Amount n = amount_scaled(am, *(const uint16_t *)o, 1, o[2] & 1, obj);
+    {
+        auto ct = g_amt_cost.find({*(const uint16_t *)o, 1});
+        if (ct == g_amt_cost.end()) ct = g_amt_cost.find({trigger_card(*(const uint16_t *)o, o[2] & 1, obj), 1});
+        if (ct != g_amt_cost.end() && !discard_cost(c, side, ct->second)) n = Amount{0, 0};   /* the cost could not be paid: nothing is drawn */
+    }
     static const bool dbg = getenv("TF3_DEBUG_FX") != nullptr;
     if (dbg) A->log("draw effect of id %u: controller %u draws %d, other player draws %d", *(const uint16_t *)o, side, n.self, n.opp);
     if (n.self > 0) call_game(c, F_DRAW_CARDS, side, (uint32_t)n.self, 0, 0);
