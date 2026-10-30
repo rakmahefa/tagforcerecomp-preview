@@ -6,7 +6,7 @@ here, once, into a sorted set of duel card ids (Tag Force 1 ids and the ids of t
 Spec file (tools/mods/tf3_efeitos.json): { "<TF3 card id>": {"like": <TF1 card id>, "zone": "deck", "filter": {...}} }
   zone    "deck": searches the Deck (like Reinforcement of the Army, 5328); "grave": picks from the Graveyard (The Warrior Returning Alive, 5330);
           "grave_summon": Graveyard cards that can be Special Summoned (Call of the Haunted, 4989); "hand": Special Summon from the hand (Magnet Circle LV2, 6572)
-  filter  monster (bool), normal (bool: no effect), level_min, level_max, type (name or number), attribute (name or number),
+  filter  monster (bool), category_in (list of card categories: 2, 3 = Fusion, 4, 5 = Ritual), normal (bool: no effect), level_min, level_max, type (name or number), attribute (name or number),
           atk_min, atk_max, def_min, def_max, name_has (substring of the English name, case-insensitive), name_is (exact English name)
   count   (deck / grave zones) how many cards the effect moves to the hand: the game picks the first, the plugin moves count-1 more matching ones
 Output: effects.bin = "TF3E", u32 n, then per card: u16 duel id, u8 zone, u8 extra picks (count - 1), u32 count, u16 ids[count] (sorted).
@@ -52,6 +52,8 @@ def combina(p, f):
     if "not" in f and combina(p, f["not"]):
         return False
     if f.get("monster") is not None and (p["category"] < 13) != f["monster"]:
+        return False
+    if "category_in" in f and p["category"] not in f["category_in"]:
         return False
     if f.get("normal") is not None and (p["category"] == 0) != f["normal"]:
         return False
@@ -154,13 +156,14 @@ def resolver_valores(gids, spec=None):
 
 LADOS_DESTRUIR = {"own": 1, "opp": 2, "both": 3}
 ZONAS_DESTRUIR = {"monster": 1, "st": 2, "all": 3}
-CONDS_DESTRUIR = {None: 0, "opp_monsters_full": 1, "opp_st_full": 2, "controls": 4, "opp_attack_monsters": 5}
+CONDS_DESTRUIR = {None: 0, "opp_monsters_full": 1, "opp_st_full": 2, "controls": 4, "opp_attack_monsters": 5, "target": 6}
 
 
 def resolver_destruir(gids, spec=None):
     """-> destroy.bin bytes: "Destroy all" effects of the installed cards (see the plugin: hk_target_all). The card borrows the record of Dark Hole (4342, both
     sides), Raigeki (4343, opponent) or Heavy Storm (4891, Spell / Trap zones too) with "like".
     Spec: "destroy": {"side": own|opp|both, "zones": monster|st|all, "cond": {"kind": opp_monsters_full | opp_st_full | controls, "n": N, "filter": {...}}}
+      cond kind "target" (zones monster): "Destroy 1 face-up monster matching the filter" - only matching face-up monsters are targets, the first one found is destroyed
       cond = "Activate only when ...": the opponent's 5 monster (or Spell / Trap) zones are all occupied; or you control N face-up monsters that match the filter"""
     if spec is None:
         spec = _carregar(SPEC_AUTO, SPEC)
