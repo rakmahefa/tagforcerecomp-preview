@@ -152,3 +152,7 @@ Battle Gladius uses `"equipped_to_deck": true` instead. The departing monster mu
 2. Find what the card-specific part is: a scan function (table `09f76818`), a chain of ids, or something else. Hook point lists are in `docs/HOOKS.md`.
 3. Replace only that part for the new ids and keep the donor's record for everything else.
 4. Test in a duel with `tools/test/tf.py` (`TF3_FORCE_CARDS` forces TF3 card ids into the opening hand).
+
+
+Grave Squirmer is `{"like": 5484, "trigger_like": 5484}` (donor Newdoria): after it is destroyed by battle the game destroys 1 monster on the field, as for Newdoria. Its text says "1 card", so Spell / Trap Cards cannot be chosen (partial). The destroy rules of `destroy.bin` only apply to the three "destroy all" filters of Dark Hole / Raigeki / Heavy Storm: a trigger monster destroys through its donor's own target filter, so it destroys what the donor destroys (a FLIP monster that borrows 4-Starred Ladybug of Doom destroys Level 4 monsters, not what its text says).
+`tools/test/tf3_flip_kinds.py` prints the game's FLIP classification (1 = FLIP) of card ids in one session; every TF1 FLIP monster tried (Man-Eater Bug, Cyber Jar, Old Vindictive Magician, ...) answers 1. `tf3_lote.py --rot virar` Sets the first hand card (a monster), ends the turn and lets the opponent attack it.

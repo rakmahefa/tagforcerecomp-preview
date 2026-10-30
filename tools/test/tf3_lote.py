@@ -46,6 +46,8 @@ ROTEIROS = {
     'armadilha': PRE + "X w300 shot:t1 O w60 RIGHT w60 RIGHT w60 X w200 w3000 shot:t5 X w400 shot:t6 X w400 shot:t7 X w400 shot:t8 w600 estado:fim",
     # same, then answers the selection prompts of a Graveyard / Deck effect (OK, pick the first card, confirm) and ends with the state
     'armadilha_sel': PRE + "X w300 shot:t1 O w60 RIGHT w60 RIGHT w60 X w200 w3000 shot:t5 X w400 X w400 shot:t7 X w500 shot:t8 X w500 shot:t9 X w500 shot:t10 X w500 X w700 shot:t11 X w500 w900 estado:fim",
+    # Set the first hand card (a monster: DOWN picks Set), end the turn, let the opponent attack it, answer YES to the FLIP prompt
+    'virar': PRE + "DOWN w30 X w300 shot:t1 O w60 RIGHT w60 RIGHT w60 X w200 w3000 shot:t5 X w400 shot:t6 X w400 shot:t7 X w400 shot:t8 w600 estado:fim",
     # summon it, Battle Phase, attack the first target; stops at the "Activate the effect?" prompt if there is one
     'atacar': PRE + "X w300 O w60 RIGHT w20 X w100 X w100 X w100 X w700 shot:d3 estado:fim",
     # same, answers YES, picks the first card / position offered and lets the effect finish
