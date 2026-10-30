@@ -78,8 +78,9 @@ struct Amount { int32_t self, opp; };
 static std::map<std::pair<uint16_t, uint8_t>, Amount> g_amt;
 struct AmountPer { uint8_t flags; std::vector<uint16_t> ids; };   /* flags: bit 0 count different ids only, bits 1-2 side (0 own, 1 opponent, 2 both) */
 static std::map<std::pair<uint16_t, uint8_t>, AmountPer> g_amt_per;
-struct AmountCost { uint8_t count; std::vector<uint16_t> ids; };   /* discard `count` hand cards of these ids as the cost; none if the hand has too few */
+struct AmountCost { uint8_t count; bool to_deck; std::vector<uint16_t> ids; };   /* cost: move `count` hand cards of these ids to the Graveyard (or the Deck); nothing happens if the hand has too few */
 static std::map<std::pair<uint16_t, uint8_t>, AmountCost> g_amt_cost;
+static std::map<std::pair<uint16_t, uint8_t>, AmountCost> g_amt_mill;   /* after the draw: send `count` cards of these ids from the Deck to the Graveyard */
 static uint32_t zone_card(uint32_t side, uint32_t slot);
 static Amount amount_scaled(const Amount *am, uint16_t id, uint8_t kind, uint32_t side, uint32_t object) {   /* the amount times its "per" count of monsters, when it has one */
     auto it = g_amt_per.find({id, kind});
@@ -130,9 +131,17 @@ static void amt_load(void) {
         for (uint32_t i = 0; i < n; i++) {
             uint16_t id, cnt; uint8_t kind, need;
             if (fread(&id, 2, 1, f) != 1 || fread(&kind, 1, 1, f) != 1 || fread(&need, 1, 1, f) != 1 || fread(&cnt, 2, 1, f) != 1) break;
-            AmountCost r{need, std::vector<uint16_t>(cnt)};
+            AmountCost r{(uint8_t)(need & 0x7f), (need & 0x80) != 0, std::vector<uint16_t>(cnt)};
             if (cnt && fread(r.ids.data(), 2, cnt, f) != cnt) break;
             g_amt_cost[{id, kind}] = std::move(r);
+        }
+    if (fread(tag, 1, 4, f) == 4 && !memcmp(tag, "TF3X", 4) && fread(&n, 4, 1, f) == 1)   /* Deck -> Graveyard after the draw */
+        for (uint32_t i = 0; i < n; i++) {
+            uint16_t id, cnt; uint8_t kind, need;
+            if (fread(&id, 2, 1, f) != 1 || fread(&kind, 1, 1, f) != 1 || fread(&need, 1, 1, f) != 1 || fread(&cnt, 2, 1, f) != 1) break;
+            AmountCost r{need, false, std::vector<uint16_t>(cnt)};
+            if (cnt && fread(r.ids.data(), 2, cnt, f) != cnt) break;
+            g_amt_mill[{id, kind}] = std::move(r);
         }
     fclose(f);
     A->log("TF3 Cards: %u draw / life point amounts loaded", (unsigned)g_amt.size());
@@ -716,9 +725,22 @@ static bool discard_cost(TfCpu *c, uint32_t side, const AmountCost &cost) {
     if (pick.size() < cost.count) return false;
     for (size_t k = pick.size(); k-- > 0;) {   /* highest index first: the lower ones keep their place */
         call_game(c, 0x09f4be50u, side, 11, pick[k], 0);
-        call_game(c, 0x09f4bff8u, side, 14, *(const uint32_t *)A->mem(base + 20), 0x09f80000u - 28456u);
+        call_game(c, 0x09f4bff8u, side, cost.to_deck ? 13 : 14, *(const uint32_t *)A->mem(base + (cost.to_deck ? 16 : 20)), 0x09f80000u - 28456u);
     }
     return true;
+}
+
+/* Deck -> Graveyard: the first `count` Deck cards that match (all of them when the id list holds every card). */
+static void mill_cards(TfCpu *c, uint32_t side, const AmountCost &m) {
+    const uint32_t base = 0x09f80000u - 25364u + side * 4012u;
+    for (uint32_t k = 0; k < m.count; k++) {
+        const uint32_t n = *(const uint32_t *)A->mem(base + 16);
+        uint32_t i = 0;
+        while (i < n && i < 160 && !std::binary_search(m.ids.begin(), m.ids.end(), (uint16_t)(*(const uint16_t *)A->mem(base + 928 + i * 4) & 0x1fff))) i++;
+        if (i >= n || i >= 160) break;
+        call_game(c, 0x09f4be50u, side, 13, i, 0);
+        call_game(c, 0x09f4bff8u, side, 14, *(const uint32_t *)A->mem(base + 20), 0x09f80000u - 28456u);
+    }
 }
 
 /* libduel_eng 09ee56a0: the resolution of the draw effects (Pot of Greed and others). It decides by card id how many cards are drawn and by whom, then calls
@@ -732,15 +754,21 @@ static int hk_draw(TfCpu *c) {
     if (!am) return 0;
     const uint32_t side = (uint32_t)((o[2] & 1) ^ ((o[3] & 0x7f) >> 6));
     Amount n = amount_scaled(am, *(const uint16_t *)o, 1, o[2] & 1, obj);
+    bool paid = true;
     {
         auto ct = g_amt_cost.find({*(const uint16_t *)o, 1});
         if (ct == g_amt_cost.end()) ct = g_amt_cost.find({trigger_card(*(const uint16_t *)o, o[2] & 1, obj), 1});
-        if (ct != g_amt_cost.end() && !discard_cost(c, side, ct->second)) n = Amount{0, 0};   /* the cost could not be paid: nothing is drawn */
+        if (ct != g_amt_cost.end() && !discard_cost(c, side, ct->second)) n = Amount{0, 0}, paid = false;   /* the cost could not be paid: nothing is drawn */
     }
     static const bool dbg = getenv("TF3_DEBUG_FX") != nullptr;
     if (dbg) A->log("draw effect of id %u: controller %u draws %d, other player draws %d", *(const uint16_t *)o, side, n.self, n.opp);
     if (n.self > 0) call_game(c, F_DRAW_CARDS, side, (uint32_t)n.self, 0, 0);
     if (n.opp > 0) call_game(c, F_DRAW_CARDS, 1 - side, (uint32_t)n.opp, 0, 0);
+    if (paid) {
+        auto mt = g_amt_mill.find({*(const uint16_t *)o, 1});
+        if (mt == g_amt_mill.end()) mt = g_amt_mill.find({trigger_card(*(const uint16_t *)o, o[2] & 1, obj), 1});
+        if (mt != g_amt_mill.end()) mill_cards(c, side, mt->second);
+    }
     A->set_reg(c, 2, 0);
     return 1;
 }

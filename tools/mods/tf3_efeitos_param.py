@@ -137,10 +137,11 @@ def resolver_valores(gids, spec=None):
     Either may carry "per": {"side": own|opp|both, "filter": {...}, "distinct": bool}: the numbers are multiplied by how many face-up monsters of that side
     match the filter (distinct = counting different card ids only)
     Either may carry "discard": {"count": N, "filter": {...}}: a cost - N matching cards of the controller's hand are sent to the Graveyard first; if the hand has
-    fewer, nothing is drawn / gained"""
+    fewer, nothing is drawn / gained; "to": "deck" puts them on the Deck instead
+    Either may carry "mill": {"count": N, "filter": {...}}: after the draw, the first N matching cards of the controller's Deck go to the Graveyard"""
     if spec is None:
         spec = _carregar(SPEC_AUTO, SPEC)
-    out, per, cost = [], [], []
+    out, per, cost, mill = [], [], [], []
     prop = None
     for k, e in sorted(spec.items(), key=lambda x: int(x[0])):
         if int(k) not in gids:
@@ -152,7 +153,12 @@ def resolver_valores(gids, spec=None):
                 if d:
                     prop = prop or propriedades(gids)
                     ids = sorted(i for i, q in prop.items() if combina(q, d.get("filter", {})))
-                    cost.append(struct.pack("<HBBH", gids[int(k)], code, d.get("count", 1), len(ids)) + struct.pack("<%dH" % len(ids), *ids))
+                    cost.append(struct.pack("<HBBH", gids[int(k)], code, d.get("count", 1) | (0x80 if d.get("to") == "deck" else 0), len(ids)) + struct.pack("<%dH" % len(ids), *ids))
+                d = e[kind].get("mill")
+                if d:
+                    prop = prop or propriedades(gids)
+                    ids = sorted(i for i, q in prop.items() if combina(q, d.get("filter", {})))
+                    mill.append(struct.pack("<HBBH", gids[int(k)], code, d.get("count", 1), len(ids)) + struct.pack("<%dH" % len(ids), *ids))
                 p = e[kind].get("per")
                 if p:
                     prop = prop or propriedades(gids)
@@ -160,7 +166,7 @@ def resolver_valores(gids, spec=None):
                     flags = (1 if p.get("distinct") else 0) | (LADOS_POR[p.get("side", "own")] << 1)
                     per.append(struct.pack("<HBBH", gids[int(k)], code, flags, len(ids)) + struct.pack("<%dH" % len(ids), *ids))
     return b"TF3V" + struct.pack("<I", len(out)) + b"".join(out) + b"TF3M" + struct.pack("<I", len(per)) + b"".join(per) \
-        + b"TF3C" + struct.pack("<I", len(cost)) + b"".join(cost)
+        + b"TF3C" + struct.pack("<I", len(cost)) + b"".join(cost) + b"TF3X" + struct.pack("<I", len(mill)) + b"".join(mill)
 
 
 LADOS_DESTRUIR = {"own": 1, "opp": 2, "both": 3}
