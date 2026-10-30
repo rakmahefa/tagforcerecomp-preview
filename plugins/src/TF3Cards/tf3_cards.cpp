@@ -1315,6 +1315,29 @@ static int hk_battle_destroy_replace(TfCpu *c) {
     return 1;
 }
 
+/* How many cards match the condition of a stat rule (`cond`: face-up monsters, or Graveyard cards when cond_side bit 2 is set, of the side relative to the source
+ * card's controller `ss`); `excl_slot` is the source's own monster zone that does not count when the rule says so. */
+static int32_t stat_cond_count(const StatRule &r, uint32_t ss, int excl_slot) {
+    int32_t n = 0;
+    for (uint32_t cs = 0; cs < 2; cs++) {
+        const bool own = cs == ss;
+        const uint8_t cside = r.cond_side & 3;
+        if (cside == 1 ? !own : cside == 2 ? own : false) continue;
+        if (r.cond_side & 4) {   /* count the Graveyard cards of the id set instead of the monsters of the field */
+            const uint32_t base = DUEL_SIDES + cs * DUEL_SIDE_SIZE, gn = *(const uint32_t *)A->mem(base + 20);
+            for (uint32_t gk = 0; gk < gn && gk < 160; gk++)
+                if (std::binary_search(r.cond.begin(), r.cond.end(), (uint16_t)(*(const uint16_t *)A->mem(base + 1808 + gk * 4) & 0x1fff))) n++;
+            continue;
+        }
+        for (uint32_t ck = 0; ck < 5; ck++) {
+            if (r.excl && cs == ss && (int)ck == excl_slot) continue;
+            const uint32_t id = zone_card(cs, ck);
+            if (id && std::binary_search(r.cond.begin(), r.cond.end(), (uint16_t)id)) n++;
+        }
+    }
+    return n;
+}
+
 static int hk_stats(TfCpu *c) {
     const uint32_t side = A->reg(c, 4) & 1, slot = A->reg(c, 5), out = A->reg(c, 6);
     static const bool dbg = getenv("TF3_DEBUG_STATS") != nullptr;
@@ -1339,7 +1362,15 @@ static int hk_stats(TfCpu *c) {
         for (uint32_t ss = 0; ss < 2; ++ss) for (uint32_t k = 0; k < 5; k++) {
             const uint32_t e = DUEL_SIDES + ss * DUEL_SIDE_SIZE + 0x30 + 100 + 20 * k;
             const uint32_t id = *(const uint16_t *)A->mem(e) & 0x1fff, flags = *(const uint32_t *)A->mem(e + 0x10);
-            if (id == r.src && !(flags & 0x22) && zone_effect_active(ss, k + 5) && equipped_to(ss, k + 5, side, slot) && spell_affects(ss)) { *atk += r.atk; *def += r.def; }
+            if (id == r.src && !(flags & 0x22) && zone_effect_active(ss, k + 5) && equipped_to(ss, k + 5, side, slot) && spell_affects(ss)) {
+                int32_t mult = 1;
+                if (r.cond_side) {   /* "gains N ATK for each ...": the count is taken relative to the equip card's controller */
+                    const int32_t n = stat_cond_count(r, ss, -1);
+                    if (!n) continue;
+                    mult = (r.per & 1) ? n : 1;
+                }
+                *atk += r.atk * mult; *def += r.def * mult;
+            }
         }
     }
     for (const auto &r : g_stat)
@@ -1358,23 +1389,7 @@ static int hk_stats(TfCpu *c) {
                 if (sc != 0 && ((r.scope & 32) || !r.target.empty()) && !std::binary_search(r.target.begin(), r.target.end(), (uint16_t)me)) continue;
                 int32_t mult = 1;
                 if (r.cond_side) {
-                    int32_t n = 0;
-                    for (uint32_t cs = 0; cs < 2; cs++) {
-                        const bool own = cs == ss;
-                        const uint8_t cside = r.cond_side & 3;
-                        if (cside == 1 ? !own : cside == 2 ? own : false) continue;
-                        if (r.cond_side & 4) {   /* count the Graveyard cards of the id set instead of the monsters of the field */
-                            const uint32_t base = DUEL_SIDES + cs * DUEL_SIDE_SIZE, gn = *(const uint32_t *)A->mem(base + 20);
-                            for (uint32_t gk = 0; gk < gn && gk < 160; gk++)
-                                if (std::binary_search(r.cond.begin(), r.cond.end(), (uint16_t)(*(const uint16_t *)A->mem(base + 1808 + gk * 4) & 0x1fff))) n++;
-                            continue;
-                        }
-                        for (uint32_t ck = 0; ck < 5; ck++) {
-                            if (r.excl && cs == ss && ck == sk) continue;
-                            const uint32_t id = zone_card(cs, ck);
-                            if (id && std::binary_search(r.cond.begin(), r.cond.end(), (uint16_t)id)) n++;
-                        }
-                    }
+                    const int32_t n = stat_cond_count(r, ss, (int)sk);
                     if (!n) continue;
                     mult = (r.per & 1) ? n : 1;
                 }

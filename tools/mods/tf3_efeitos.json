@@ -175,5 +175,7 @@
  "7751": {"like": 5330, "zone": "grave", "count": 2, "filter": {"monster": true, "type": "thunder", "atk_max": 1500}, "name": "Recycling Batteries"},
  "7628": {"like": 5330, "zone": "grave", "count": 2, "filter": {"monster": true, "name_has": "Batteryman", "level_max": 4}, "name": "Quick Charger"},
  "7011": {"like": 4342, "destroy": {"side": "both", "zones": "monster", "cond": {"kind": "target", "filter": {"monster": true, "category_in": [2, 3]}}}, "name": "Anti-Fusion Device"},
- "7012": {"like": 4342, "destroy": {"side": "both", "zones": "monster", "cond": {"kind": "target", "filter": {"monster": true, "category_in": [4, 5]}}}, "name": "Ritual Sealing"}
+ "7012": {"like": 4342, "destroy": {"side": "both", "zones": "monster", "cond": {"kind": "target", "filter": {"monster": true, "category_in": [4, 5]}}}, "name": "Ritual Sealing"},
+ "7739": {"like": 4310, "name": "Fighting Spirit"},
+ "7494": {"like": 4310, "name": "Assault Armor"}
 }

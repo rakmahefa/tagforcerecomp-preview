@@ -138,5 +138,7 @@
  "7184": {"scope": "self", "atk": 500, "cond": {"side": "own", "zone": "grave", "per": true, "filter": {"monster": true, "type": "reptile"}}},
  "7183": {"scope": "self", "atk": 500, "cond": {"side": "own", "zone": "grave", "per": true, "filter": {"monster": true, "type": "reptile"}}},
  "7563": {"scope": "self", "atk": 100, "cond": {"side": "own", "zone": "grave", "per": true, "filter": {"monster": true, "attribute": "dark"}}},
- "7698": {"scope": "self", "atk": 100, "cond": {"side": "any", "zone": "grave", "per": true, "filter": {"monster": true, "type": "warrior"}}}
+ "7698": {"scope": "self", "atk": 100, "cond": {"side": "any", "zone": "grave", "per": true, "filter": {"monster": true, "type": "warrior"}}},
+ "7739": {"scope": "equip", "atk": 300, "cond": {"side": "opp", "per": true, "filter": {"monster": true}}},
+ "7494": {"scope": "equip", "atk": 300, "target": {"monster": true, "type": "warrior"}}
 }
