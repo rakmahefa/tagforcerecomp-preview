@@ -134,7 +134,7 @@ def pacote_do_caso(cid, mods, spec):
 
 def poke_cemiterio(cid, mods, spec, grave):
     """--grave: script words that seed player 0's Graveyard (count at +20, ids at +0x710 of the player block). 'auto' = up to 3 original cards
-    that match the filter of the card's spec, otherwise a comma list of ids."""
+    that match the filter of the card's spec (the new TF3 cards when no original matches), otherwise a comma list of ids."""
     if grave == 'auto':
         import tf3_efeitos_param as P
         rows = [l.split(' ', 3) for l in open(os.path.join(ROOT, mods, 'TF3Cards', 'ported.txt'), encoding='utf-8').read().splitlines() if l.strip()]
@@ -142,6 +142,8 @@ def poke_cemiterio(cid, mods, spec, grave):
         e = ((spec or {}).get('effects') or {}).get(str(cid)) or json.load(open(os.path.join(ROOT, 'tools', 'mods', 'tf3_efeitos.json'), encoding='utf-8')).get(str(cid)) or {}
         prop = P.propriedades(gids)
         ids = sorted(i for i, p in prop.items() if i not in gids.values() and P.combina(p, e.get('filter', {'monster': True})))[:3]
+        if not ids:   # no original card matches (e.g. Psychic monsters): use the new TF3 cards
+            ids = sorted(i for i, p in prop.items() if i in gids.values() and P.combina(p, e.get('filter', {'monster': True})))[:3]
     else:
         ids = [int(x) for x in grave.split(',')]
     if not ids:
