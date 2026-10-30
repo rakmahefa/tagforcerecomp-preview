@@ -76,6 +76,28 @@ static uint16_t trigger_card(uint16_t id, uint32_t side, uint32_t object = 0) {
  * tools/mods/tf3_efeitos_param.py: the game fixes them per card id inside its handlers, so for the new cards the handlers read them from here instead. */
 struct Amount { int32_t self, opp; };
 static std::map<std::pair<uint16_t, uint8_t>, Amount> g_amt;
+struct AmountPer { uint8_t flags; std::vector<uint16_t> ids; };   /* flags: bit 0 count different ids only, bits 1-2 side (0 own, 1 opponent, 2 both) */
+static std::map<std::pair<uint16_t, uint8_t>, AmountPer> g_amt_per;
+static uint32_t zone_card(uint32_t side, uint32_t slot);
+static Amount amount_scaled(const Amount *am, uint16_t id, uint8_t kind, uint32_t side, uint32_t object) {   /* the amount times its "per" count of monsters, when it has one */
+    auto it = g_amt_per.find({id, kind});
+    if (it == g_amt_per.end()) it = g_amt_per.find({trigger_card(id, side, object), kind});
+    if (it == g_amt_per.end()) return *am;
+    const AmountPer &r = it->second;
+    const uint32_t mode = (r.flags >> 1) & 3;
+    std::vector<uint16_t> seen;
+    int32_t n = 0;
+    for (uint32_t s = 0; s < 2; s++) {
+        if (mode != 2 && s != (mode == 0 ? side : 1 - side)) continue;
+        for (uint32_t k = 0; k < 5; k++) {
+            const uint16_t m = (uint16_t)zone_card(s, k);
+            if (!m || !std::binary_search(r.ids.begin(), r.ids.end(), m)) continue;
+            if ((r.flags & 1) && std::find(seen.begin(), seen.end(), m) != seen.end()) continue;
+            seen.push_back(m); n++;
+        }
+    }
+    return Amount{am->self * n, am->opp * n};
+}
 static const Amount *amount_of(uint16_t id, uint8_t kind, uint32_t side, uint32_t object = 0) {   /* id = the id of the effect object */
     auto it = g_amt.find({id, kind});
     if (it != g_amt.end()) return &it->second;
@@ -92,6 +114,15 @@ static void amt_load(void) {
             uint16_t id; uint8_t kind, pad; int32_t v[2];
             if (fread(&id, 2, 1, f) != 1 || fread(&kind, 1, 1, f) != 1 || fread(&pad, 1, 1, f) != 1 || fread(v, 4, 2, f) != 2) break;
             g_amt[{id, kind}] = Amount{v[0], v[1]};
+        }
+    char tag[4]; uint32_t n = 0;
+    if (fread(tag, 1, 4, f) == 4 && !memcmp(tag, "TF3M", 4) && fread(&n, 4, 1, f) == 1)   /* "per" rules: the amount is multiplied by a count of monsters */
+        for (uint32_t i = 0; i < n; i++) {
+            uint16_t id, cnt; uint8_t kind, flags;
+            if (fread(&id, 2, 1, f) != 1 || fread(&kind, 1, 1, f) != 1 || fread(&flags, 1, 1, f) != 1 || fread(&cnt, 2, 1, f) != 1) break;
+            AmountPer r{flags, std::vector<uint16_t>(cnt)};
+            if (cnt && fread(r.ids.data(), 2, cnt, f) != cnt) break;
+            g_amt_per[{id, kind}] = std::move(r);
         }
     fclose(f);
     A->log("TF3 Cards: %u draw / life point amounts loaded", (unsigned)g_amt.size());
@@ -616,9 +647,10 @@ static int hk_lp_amounts(TfCpu *c) {
     if (const Amount *am = amount_of(*(const uint16_t *)o, 2, o[2] & 1, obj)) {
         const uint32_t side = (uint32_t)((o[2] & 1) ^ ((o[3] >> 6) & 1));
         if (getenv("TF3_DEBUG_FX")) A->log("life point effect of id %u: controller %d, other player %d", *(const uint16_t *)o, am->self, am->opp);
+        const Amount n = amount_scaled(am, *(const uint16_t *)o, 2, o[2] & 1, obj);
         int32_t *d = (int32_t *)A->mem(out);
-        d[side] = am->self;
-        d[1 - side] = am->opp;
+        d[side] = n.self;
+        d[1 - side] = n.opp;
         return 1;
     }
     return 0;
@@ -673,7 +705,7 @@ static int hk_draw(TfCpu *c) {
     const Amount *am = amount_of(*(const uint16_t *)o, 1, o[2] & 1, obj);
     if (!am) return 0;
     const uint32_t side = (uint32_t)((o[2] & 1) ^ ((o[3] & 0x7f) >> 6));
-    const Amount n = *am;
+    const Amount n = amount_scaled(am, *(const uint16_t *)o, 1, o[2] & 1, obj);
     static const bool dbg = getenv("TF3_DEBUG_FX") != nullptr;
     if (dbg) A->log("draw effect of id %u: controller %u draws %d, other player draws %d", *(const uint16_t *)o, side, n.self, n.opp);
     if (n.self > 0) call_game(c, F_DRAW_CARDS, side, (uint32_t)n.self, 0, 0);

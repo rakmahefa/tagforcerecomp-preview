@@ -165,5 +165,10 @@
   "trigger_like": 4226,
   "trigger_event": "battle",
   "after_attack_defense": true
+ },
+ "7619": {
+  "like": 4844,
+  "draw": {"self": 1, "per": {"side": "own", "filter": {"monster": true, "name_has": "Neo-Spacian"}, "distinct": true}},
+  "name": "Space Gift"
  }
 }

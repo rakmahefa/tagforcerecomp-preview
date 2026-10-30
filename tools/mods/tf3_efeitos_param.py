@@ -123,22 +123,32 @@ def resolver_gatilhos(gids, spec=None):
 
 
 KIND_VALUES = {"draw": 1, "lp": 2}
+LADOS_POR = {"own": 0, "opp": 1, "both": 2}
 
 
 def resolver_valores(gids, spec=None):
     """-> amount.bin bytes: the numbers of the draw / life point effects of the installed cards (see the plugin: hk_draw, hk_lp_amounts).
     Spec keys: "draw": {"self": N, "opp": N}  cards drawn by the card's controller / by the other player;
-               "lp": {"self": N, "opp": N}    life point change of each side (positive = gain, negative = damage)"""
+               "lp": {"self": N, "opp": N}    life point change of each side (positive = gain, negative = damage)
+    Either may carry "per": {"side": own|opp|both, "filter": {...}, "distinct": bool}: the numbers are multiplied by how many face-up monsters of that side
+    match the filter (distinct = counting different card ids only)"""
     if spec is None:
         spec = _carregar(SPEC_AUTO, SPEC)
-    out = []
+    out, per = [], []
+    prop = None
     for k, e in sorted(spec.items(), key=lambda x: int(x[0])):
         if int(k) not in gids:
             continue
         for kind, code in KIND_VALUES.items():
             if kind in e:
                 out.append(struct.pack("<HBBii", gids[int(k)], code, 0, e[kind].get("self", 0), e[kind].get("opp", 0)))
-    return b"TF3V" + struct.pack("<I", len(out)) + b"".join(out)
+                p = e[kind].get("per")
+                if p:
+                    prop = prop or propriedades(gids)
+                    ids = sorted(i for i, q in prop.items() if combina(q, p.get("filter", {})))
+                    flags = (1 if p.get("distinct") else 0) | (LADOS_POR[p.get("side", "own")] << 1)
+                    per.append(struct.pack("<HBBH", gids[int(k)], code, flags, len(ids)) + struct.pack("<%dH" % len(ids), *ids))
+    return b"TF3V" + struct.pack("<I", len(out)) + b"".join(out) + b"TF3M" + struct.pack("<I", len(per)) + b"".join(per)
 
 
 LADOS_DESTRUIR = {"own": 1, "opp": 2, "both": 3}

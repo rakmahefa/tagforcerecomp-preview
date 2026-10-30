@@ -70,6 +70,8 @@ FLIP effects (donor 5769) are set up the same way but do not fire yet when the c
   "7234": { "like": 4353, "lp": { "opp": 3000 } } }
 ```
 
+Either record may carry `"per": {"side": "own|opp|both", "filter": {...}, "distinct": true}`: the numbers are multiplied by how many face-up monsters of that side match the filter (`distinct` counts different card ids only), e.g. `"7619": {"like": 4844, "draw": {"self": 1, "per": {"side": "own", "filter": {"monster": true, "name_has": "Neo-Spacian"}, "distinct": true}}}` (Space Gift). The rules are a `TF3M` trailer of `amount.bin`. Checked in a duel with an opponent-side filter: +1000 life points and 1 card drawn for one opposing monster.
+
 The `like` donors are Pot of Greed (draw) and Tremendous Fire (life points). A trigger spec may combine any trigger donor with these records: while the aliased trigger runs, the record lookup uses the card's own `like` instead of the trigger donor's. `tools/mods/tf3_efeitos_gatilho.py` writes them for texts such as "When this card is destroyed by battle and sent to the Graveyard, draw 1 card" / "both players take 500 damage".
 Checked in a duel: Blizzed (draw 1) and Abaki (both players 2000 → 1500).
 
