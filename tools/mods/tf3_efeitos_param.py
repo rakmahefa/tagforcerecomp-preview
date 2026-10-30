@@ -137,7 +137,7 @@ def resolver_valores(gids, spec=None):
     Either may carry "per": {"side": own|opp|both, "filter": {...}, "distinct": bool}: the numbers are multiplied by how many face-up monsters of that side
     match the filter (distinct = counting different card ids only)
     Either may carry "discard": {"count": N, "filter": {...}}: a cost - N matching cards of the controller's hand are sent to the Graveyard first; if the hand has
-    fewer, nothing is drawn / gained; "to": "deck" puts them on the Deck instead
+    fewer, nothing is drawn / gained; "to": "deck" puts them on the Deck instead; "both": true makes the other player pay it too (count up to 63)
     Either may carry "mill": {"count": N, "filter": {...}}: after the draw, the first N matching cards of the controller's Deck go to the Graveyard"""
     if spec is None:
         spec = _carregar(SPEC_AUTO, SPEC)
@@ -153,7 +153,7 @@ def resolver_valores(gids, spec=None):
                 if d:
                     prop = prop or propriedades(gids)
                     ids = sorted(i for i, q in prop.items() if combina(q, d.get("filter", {})))
-                    cost.append(struct.pack("<HBBH", gids[int(k)], code, d.get("count", 1) | (0x80 if d.get("to") == "deck" else 0), len(ids)) + struct.pack("<%dH" % len(ids), *ids))
+                    cost.append(struct.pack("<HBBH", gids[int(k)], code, d.get("count", 1) | (0x80 if d.get("to") == "deck" else 0) | (0x40 if d.get("both") else 0), len(ids)) + struct.pack("<%dH" % len(ids), *ids))
                 d = e[kind].get("mill")
                 if d:
                     prop = prop or propriedades(gids)

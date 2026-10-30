@@ -78,7 +78,7 @@ struct Amount { int32_t self, opp; };
 static std::map<std::pair<uint16_t, uint8_t>, Amount> g_amt;
 struct AmountPer { uint8_t flags; std::vector<uint16_t> ids; };   /* flags: bit 0 count different ids only, bits 1-2 side (0 own, 1 opponent, 2 both) */
 static std::map<std::pair<uint16_t, uint8_t>, AmountPer> g_amt_per;
-struct AmountCost { uint8_t count; bool to_deck; std::vector<uint16_t> ids; };   /* cost: move `count` hand cards of these ids to the Graveyard (or the Deck); nothing happens if the hand has too few */
+struct AmountCost { uint8_t count; bool to_deck; std::vector<uint16_t> ids; bool both = false; };   /* cost: move `count` hand cards of these ids to the Graveyard (or the Deck); nothing happens if the hand has too few */
 static std::map<std::pair<uint16_t, uint8_t>, AmountCost> g_amt_cost;
 static std::map<std::pair<uint16_t, uint8_t>, AmountCost> g_amt_mill;   /* after the draw: send `count` cards of these ids from the Deck to the Graveyard */
 static uint32_t zone_card(uint32_t side, uint32_t slot);
@@ -131,7 +131,7 @@ static void amt_load(void) {
         for (uint32_t i = 0; i < n; i++) {
             uint16_t id, cnt; uint8_t kind, need;
             if (fread(&id, 2, 1, f) != 1 || fread(&kind, 1, 1, f) != 1 || fread(&need, 1, 1, f) != 1 || fread(&cnt, 2, 1, f) != 1) break;
-            AmountCost r{(uint8_t)(need & 0x7f), (need & 0x80) != 0, std::vector<uint16_t>(cnt)};
+            AmountCost r{(uint8_t)(need & 0x3f), (need & 0x80) != 0, std::vector<uint16_t>(cnt), (need & 0x40) != 0};
             if (cnt && fread(r.ids.data(), 2, cnt, f) != cnt) break;
             g_amt_cost[{id, kind}] = std::move(r);
         }
@@ -758,7 +758,10 @@ static int hk_draw(TfCpu *c) {
     {
         auto ct = g_amt_cost.find({*(const uint16_t *)o, 1});
         if (ct == g_amt_cost.end()) ct = g_amt_cost.find({trigger_card(*(const uint16_t *)o, o[2] & 1, obj), 1});
-        if (ct != g_amt_cost.end() && !discard_cost(c, side, ct->second)) n = Amount{0, 0}, paid = false;   /* the cost could not be paid: nothing is drawn */
+        if (ct != g_amt_cost.end()) {
+            if (!discard_cost(c, side, ct->second)) n = Amount{0, 0}, paid = false;   /* the cost could not be paid: nothing is drawn */
+            else if (ct->second.both && !discard_cost(c, 1 - side, ct->second)) n.opp = 0;   /* "each player": the other player draws only after paying too */
+        }
     }
     static const bool dbg = getenv("TF3_DEBUG_FX") != nullptr;
     if (dbg) A->log("draw effect of id %u: controller %u draws %d, other player draws %d", *(const uint16_t *)o, side, n.self, n.opp);
