@@ -1361,7 +1361,14 @@ static int hk_stats(TfCpu *c) {
                     int32_t n = 0;
                     for (uint32_t cs = 0; cs < 2; cs++) {
                         const bool own = cs == ss;
-                        if (r.cond_side == 1 ? !own : r.cond_side == 2 ? own : false) continue;
+                        const uint8_t cside = r.cond_side & 3;
+                        if (cside == 1 ? !own : cside == 2 ? own : false) continue;
+                        if (r.cond_side & 4) {   /* count the Graveyard cards of the id set instead of the monsters of the field */
+                            const uint32_t base = DUEL_SIDES + cs * DUEL_SIDE_SIZE, gn = *(const uint32_t *)A->mem(base + 20);
+                            for (uint32_t gk = 0; gk < gn && gk < 160; gk++)
+                                if (std::binary_search(r.cond.begin(), r.cond.end(), (uint16_t)(*(const uint16_t *)A->mem(base + 1808 + gk * 4) & 0x1fff))) n++;
+                            continue;
+                        }
                         for (uint32_t ck = 0; ck < 5; ck++) {
                             if (r.excl && cs == ss && ck == sk) continue;
                             const uint32_t id = zone_card(cs, ck);

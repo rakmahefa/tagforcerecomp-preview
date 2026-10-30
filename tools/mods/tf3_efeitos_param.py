@@ -205,7 +205,7 @@ def resolver_stats(gids, spec=None):
     Spec: { "<TF3 id>": {"scope": self|own|opp|all, "atk": N, "def": N, "target": {filter}, "cond": {"side": own|opp|any, "filter": {...}, "per": bool, "excl": bool}} }
       scope self: the bonus goes to the card itself; equip: to the monster the equip card is attached to; own / opp / all: to the monsters of that side that match `target` (all when absent)
       source "st": the card is a Spell / Trap (continuous Spell) and the rule works while it is face-up in a Spell / Trap zone of either side
-      cond: the rule only works while a face-up monster matching the filter is on that side (relative to the card); per = once per such monster; excl = not counting the card"""
+      cond: the rule only works while a face-up monster matching the filter is on that side (relative to the card); per = once per such monster; excl = not counting the card; zone "grave" counts the cards of that side's Graveyard instead of face-up monsters"""
     if spec is None:
         spec = _carregar(SPEC_STATS_AUTO, SPEC_STATS)
     prop = propriedades(gids)
@@ -239,7 +239,7 @@ def resolver_stats(gids, spec=None):
         tgt = sorted(i for i, p in prop.items() if combina(p, r["target"])) if r.get("target") else []
         c = r.get("cond") or {}
         cond = sorted(i for i, p in prop.items() if combina(p, c["filter"])) if c else []
-        out.append(struct.pack("<HBBBBiiII", gids[cid], ESCOPOS[r.get("scope", "self")] | (16 if r.get("source") == "st" else 0) | (32 if r.get("target") else 0), LADOS[c.get("side")], (1 if c.get("per") else 0) | (2 if r.get('per_level') else 0),
+        out.append(struct.pack("<HBBBBiiII", gids[cid], ESCOPOS[r.get("scope", "self")] | (16 if r.get("source") == "st" else 0) | (32 if r.get("target") else 0), LADOS[c.get("side")] | (4 if c.get("zone") == "grave" else 0), (1 if c.get("per") else 0) | (2 if r.get('per_level') else 0),
                                1 if c.get("excl") else 0, r.get("atk", 0), r.get("def", 0), len(tgt), len(cond))
                    + struct.pack("<%dH" % len(tgt), *tgt) + struct.pack("<%dH" % len(cond), *cond))
     trailer = b'LVL1' + struct.pack('<I', len(levels)) + b''.join(struct.pack('<Hh', cid, level) for cid, level in sorted(levels.items())) if levels else b''
