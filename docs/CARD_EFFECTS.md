@@ -167,3 +167,5 @@ Trigger donors for draw / search records: Dark Mimic LV3 (6102, "sent to the Gra
 Battle-damage donor: Des Volstgalph (5408, "destroys a monster by battle, inflicts damage") gives Fossil Tusker `{"like": 5408, "trigger_like": 5408, "trigger_event": "battle", "lp": {"opp": -400}}`. Checked with `tf3_lote.py` (`atacar`): the opponent loses the battle damage plus the 400 (control run with 0: only the battle damage).
 
 The White Stone of Legend uses the Sangan donor (4054) with `"name_has": "Blue-Eyes White Dragon"`. Checked by battle destruction (`virar`, loose filter): Deck -2, hand +1.
+
+Special Summon from the Deck on battle destruction: Pyramid Turtle (5423) as `like` and `trigger_like` with `"zone": "deck"` and a filter (Nova Summoner, Genex Searcher; the "The Sanctuary in the Sky" alternative of Nova Summoner is not implemented). Checked with `virar` (Deck list opens, Deck -2 including the draw, hand unchanged).

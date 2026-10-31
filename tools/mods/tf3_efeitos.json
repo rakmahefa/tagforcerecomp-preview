@@ -202,5 +202,7 @@
  "7610": {"like": 4434, "trigger_like": 4434, "zone": "grave", "filter": {"monster": true, "level_min": 4, "level_max": 4}, "name": "DUCKER Mobile Cannon"},
  "7338": {"like": 5408, "trigger_like": 5408, "trigger_event": "battle", "lp": {"opp": -400}},
  "7039": {"like": 5408, "trigger_like": 5408, "trigger_event": "battle", "lp": {"opp": -2000}},
- "7850": {"like": 4054, "trigger_like": 4054, "zone": "deck", "filter": {"monster": true, "name_has": "Blue-Eyes White Dragon"}}
+ "7850": {"like": 4054, "trigger_like": 4054, "zone": "deck", "filter": {"monster": true, "name_has": "Blue-Eyes White Dragon"}},
+ "7050": {"like": 5423, "trigger_like": 5423, "zone": "deck", "filter": {"monster": true, "attribute": "light", "type": "fairy", "atk_max": 1500}},
+ "7810": {"like": 5423, "trigger_like": 5423, "zone": "deck", "filter": {"monster": true, "name_has": "Genex", "atk_max": 1500}}
 }
