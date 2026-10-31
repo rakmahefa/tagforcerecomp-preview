@@ -197,5 +197,7 @@
  "6983": {"like": 5484, "trigger_like": 5484, "destroy": {"side": "both", "zones": "monster", "cond": {"kind": "target_all_not", "filter": {"monster": true, "attribute": "fire"}}}, "name": "Firestorm Prominence"},
  "6984": {"like": 5484, "trigger_like": 5484, "destroy": {"side": "both", "zones": "monster", "cond": {"kind": "target_all_not", "filter": {"monster": true, "attribute": "wind"}}}, "name": "Destruction Cyclone"},
  "6985": {"like": 5484, "trigger_like": 5484, "destroy": {"side": "both", "zones": "monster", "cond": {"kind": "target_all_not", "filter": {"monster": true, "attribute": "dark"}}}, "name": "Umbral Soul"},
- "6986": {"like": 5484, "trigger_like": 5484, "destroy": {"side": "both", "zones": "monster", "cond": {"kind": "target_all_not", "filter": {"monster": true, "attribute": "light"}}}, "name": "Radiant Spirit"}
+ "6986": {"like": 5484, "trigger_like": 5484, "destroy": {"side": "both", "zones": "monster", "cond": {"kind": "target_all_not", "filter": {"monster": true, "attribute": "light"}}}, "name": "Radiant Spirit"},
+ "7348": {"like": 6102, "trigger_like": 6102, "draw": {"self": 2, "discard": {"count": 2}}, "name": "Mad Reloader"},
+ "7610": {"like": 4434, "trigger_like": 4434, "zone": "grave", "filter": {"monster": true, "level_min": 4, "level_max": 4}, "name": "DUCKER Mobile Cannon"}
 }
