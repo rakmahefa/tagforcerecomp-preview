@@ -191,5 +191,11 @@
  "7439": {"like": 5139, "trigger_like": 5139, "trigger_event": "summon", "destroy": {"side": "both", "zones": "monster", "cond": {"kind": "target_all", "filter": {"monster": true, "type": "machine"}}}, "name": "Magnetic Mosquito"},
  "7389": {"like": 4844, "draw": {"self": 2, "opp": 2, "discard": {"count": 2, "both": true}}, "name": "Hand Destruction"},
  "7769": {"like": 5210, "draw": {"self": 0, "mill": {"count": 5}}, "name": "Needlebug Nest"},
- "7479": {"like": 5210, "draw": {"self": 0, "discard": {"count": 2}}, "name": "Fine"}
+ "7479": {"like": 5210, "draw": {"self": 0, "discard": {"count": 2}}, "name": "Fine"},
+ "6981": {"like": 5484, "trigger_like": 5484, "destroy": {"side": "both", "zones": "monster", "cond": {"kind": "target_all_not", "filter": {"monster": true, "attribute": "earth"}}}, "name": "Raging Earth"},
+ "6982": {"like": 5484, "trigger_like": 5484, "destroy": {"side": "both", "zones": "monster", "cond": {"kind": "target_all_not", "filter": {"monster": true, "attribute": "water"}}}, "name": "Silent Abyss"},
+ "6983": {"like": 5484, "trigger_like": 5484, "destroy": {"side": "both", "zones": "monster", "cond": {"kind": "target_all_not", "filter": {"monster": true, "attribute": "fire"}}}, "name": "Firestorm Prominence"},
+ "6984": {"like": 5484, "trigger_like": 5484, "destroy": {"side": "both", "zones": "monster", "cond": {"kind": "target_all_not", "filter": {"monster": true, "attribute": "wind"}}}, "name": "Destruction Cyclone"},
+ "6985": {"like": 5484, "trigger_like": 5484, "destroy": {"side": "both", "zones": "monster", "cond": {"kind": "target_all_not", "filter": {"monster": true, "attribute": "dark"}}}, "name": "Umbral Soul"},
+ "6986": {"like": 5484, "trigger_like": 5484, "destroy": {"side": "both", "zones": "monster", "cond": {"kind": "target_all_not", "filter": {"monster": true, "attribute": "light"}}}, "name": "Radiant Spirit"}
 }

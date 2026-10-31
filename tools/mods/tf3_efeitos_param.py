@@ -171,7 +171,7 @@ def resolver_valores(gids, spec=None):
 
 LADOS_DESTRUIR = {"own": 1, "opp": 2, "both": 3}
 ZONAS_DESTRUIR = {"monster": 1, "st": 2, "all": 3}
-CONDS_DESTRUIR = {None: 0, "opp_monsters_full": 1, "opp_st_full": 2, "controls": 4, "opp_attack_monsters": 5, "target": 6, "target_all": 7}
+CONDS_DESTRUIR = {None: 0, "opp_monsters_full": 1, "opp_st_full": 2, "controls": 4, "opp_attack_monsters": 5, "target": 6, "target_all": 7, "target_all_not": 9}
 
 
 def resolver_destruir(gids, spec=None):
@@ -180,6 +180,7 @@ def resolver_destruir(gids, spec=None):
     Spec: "destroy": {"side": own|opp|both, "zones": monster|st|all, "cond": {"kind": opp_monsters_full | opp_st_full | controls, "n": N, "filter": {...}}}
       cond kind "target_all": same, every matching card is destroyed (for the donors that destroy all, Ladybug 5139); zones "st" / "all" also make Spell / Trap Cards targets
       cond kind "target" (zones monster): "Destroy 1 face-up monster matching the filter" - only matching face-up monsters are targets, the first one found is destroyed
+      cond kind "target_all_not" (zones monster): every face-down monster and every face-up one that does NOT match the filter is destroyed ("destroy all face-down and non-EARTH monsters")
       cond = "Activate only when ...": the opponent's 5 monster (or Spell / Trap) zones are all occupied; or you control N face-up monsters that match the filter"""
     if spec is None:
         spec = _carregar(SPEC_AUTO, SPEC)

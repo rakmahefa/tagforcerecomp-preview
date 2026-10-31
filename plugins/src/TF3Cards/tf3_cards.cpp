@@ -876,6 +876,13 @@ static int hk_target_all(TfCpu *c) {   /* a0 = effect object, a1 = side, a2 = zo
             static const bool dbg = getenv("TF3_DEBUG_FX") != nullptr;
             if (dbg) A->log("destroy filter of id %u: side %u zone %u resolving %d -> %s", (unsigned)*(const uint16_t *)A->mem(obj), side, zone, (int)g_destroying, ok ? "ask the game" : "no");
             if (!ok) { A->set_reg(c, 2, 0); return 1; }
+            if (r.cond == 9 && zone < 5) {   /* "Destroy all face-down and non-<X> monsters": every occupied zone whose card is face-down or not in the id set */
+                const uint32_t e = DUEL_SIDES + side * DUEL_SIDE_SIZE + 0x30 + 20 * zone;
+                const uint16_t id = *(const uint16_t *)A->mem(e) & 0x1fff;
+                const bool down = (*A->mem(e + 0x10) & 0x22) != 0;
+                A->set_reg(c, 2, id && (down || !std::binary_search(r.ids.begin(), r.ids.end(), id)));
+                return 1;
+            }
             if ((r.cond == 6 || r.cond == 7) && zone < 5) {   /* "Destroy 1 face-up <filter> monster": only face-up monsters of the id set are targets, and only the first one is destroyed */
                 const uint32_t id = zone_card(side, zone);
                 bool hit = id && std::binary_search(r.ids.begin(), r.ids.end(), (uint16_t)id);
@@ -901,6 +908,19 @@ static int hk_target_all(TfCpu *c) {   /* a0 = effect object, a1 = side, a2 = zo
     const uint32_t own = A->mem(A->reg(c, 4))[2] & 1, side = A->reg(c, 5) & 1;
     if ((g_coin == 0) != (side == own)) { A->set_reg(c, 2, 0); return 1; }
     return 0;
+}
+
+/* Driver 09ee3b5c ("destroy 1 selected card": Newdoria, Man-Eater Bug, Tribute to the Doomed): a rule that destroys every matching card (cond 7, 9) runs the destroy-all
+ * driver 09ee3b7c instead, which builds the target mask from the same record filter; that is how a monster destroyed by battle (Newdoria's trigger and record) destroys all. */
+static int hk_driver_all(TfCpu *c) {
+    const uint32_t obj = A->reg(c, 4);
+    if (obj < 0x08000000u || obj > 0x0a000000u - 0x20) return 0;
+    const auto d = destroy_find(obj);
+    if (d == g_destroy.end() || (d->second.cond != 7 && d->second.cond != 9)) return 0;
+    g_destroying = true; g_destroy_taken = 0;
+    A->call_original(c, F_EFFECT_DRIVER);
+    g_destroying = false;
+    return 1;
 }
 
 static int hk_attack_trigger(TfCpu *c) {   /* 09ed5870(effect object): the "opponent declared an attack" test of Mirror Force; a destroy rule adds its own condition to it */
@@ -1947,7 +1967,7 @@ extern "C" __declspec(dllexport) int tfmod_init(const TfModApi *api) {
     A->hook(F_LP_AMOUNTS, hk_lp_amounts);
     A->hook(F_EFFECT_DRIVER, hk_effect_driver);
     A->hook(F_TARGET_ALL, hk_target_all);
-    if (!g_destroy.empty()) { A->hook(F_TARGET_OPP, hk_target_all); A->hook(F_TARGET_ST, hk_target_all); A->hook(F_TARGET_ATK, hk_target_all); A->hook(0x09ebc0a8, hk_target_all); A->hook(0x09ebfe68, hk_target_all); A->hook(F_ATTACK_TRIGGER, hk_attack_trigger); }
+    if (!g_destroy.empty()) { A->hook(F_TARGET_OPP, hk_target_all); A->hook(F_TARGET_ST, hk_target_all); A->hook(F_TARGET_ATK, hk_target_all); A->hook(0x09ebc0a8, hk_target_all); A->hook(0x09ebfe68, hk_target_all); A->hook(0x09ee3b5c, hk_driver_all); A->hook(F_ATTACK_TRIGGER, hk_attack_trigger); }
     if (getenv("TF3_DEBUG_STREAM")) A->hook(0x0882ead0, hk_debug_stream);
     if (getenv("TF3_DEBUG_OBJ")) A->hook(0x0882ead0, hk_debug_obj);
     if (getenv("TF3_DEBUG_REQ")) A->hook(0x0882ead0, hk_debug_req);
