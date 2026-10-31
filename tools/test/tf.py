@@ -134,6 +134,15 @@ def run(script):
         elif t.startswith('poke:'): print('poke', t[5:], send('poke ' + t[5:].replace(':', ' ')))   # poke:ENDERECO:HEX
         elif t.startswith('peek:'): print('peek', t[5:], send('peek ' + t[5:].replace(':', ' ')))   # peek:ENDERECO:BYTES (hex) dentro de um roteiro
         elif t in ('viva', 'amarelo'): espera_tela(t)   # waits for the picture to leave black / for a yellow menu header (+60 frames)
+        elif t == 'resolver':   # presses X until the duel state (both player blocks) stops changing: answers every prompt of an effect without fixed waits. Use with one card in hand (tf3_lote --solo): a second copy would be activated by the extra presses
+            prev = send('peek 09f79cec 8024').split()[-1]; mudou = neutro = 0
+            for _ in range(24):
+                send('hold %x' % mask('X')); send('step 6'); send('hold 0'); send('step 40')
+                sig = send('peek 09f79cec 8024').split()[-1]
+                if sig != prev: mudou += 1; neutro = 0
+                else: neutro += 1
+                prev = sig
+                if mudou and neutro >= 4: break
         elif t == 'texdump': send('texdump')   # o proximo quadro desenhado despeja gen/tex_*.bmp e os [prim] no log do jogo
         elif t == 'release': send('hold 0')
         elif t.startswith('analog:'): send('analog ' + t[7:].replace(':', ' '))   # analog:X:Y (0-255, 128 = centre) held until the next analog token

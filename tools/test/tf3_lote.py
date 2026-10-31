@@ -11,6 +11,7 @@ Usage:  python tools/test/tf3_lote.py [-j 8, never above 8: 10 pinned the CPU at
   --spec       temporary effect specs for this run only (a JSON file or inline JSON, same shape as tools/mods/tf3_efeitos.json; {"effects": {...}, "stats": {...}} also accepted);
                every case gets its own pack folder (hard links), the project files are not touched
   --grave      seed your Graveyard before the script: 'auto' = up to 3 original cards that match the card's spec filter, or a list of card ids
+  --solo       hand = the forced card (+ the --hand cards, in slots 1..): with the `ativar_r` script (X presses until the state stops changing, no fixed waits)
   --hand       write these card ids over hand slots 3, 4, ... of your hand (slots 0-2 hold the forced card): for discard costs
   --rapido     experimental fast mode (no screenshots): the duel is not the same as in full mode and the waits drift, so the script may not reach turn 3
   --check      python expression over the states ini and fim (attributes: me / op -> lp, deck, hand, n_hand, field); repeatable
@@ -47,12 +48,15 @@ ROTEIROS = {
     # same, then answers the selection prompts of a Graveyard / Deck effect (OK, pick the first card, confirm) and ends with the state
     'armadilha_sel': PRE + "X w300 shot:t1 O w60 RIGHT w60 RIGHT w60 X w200 w3000 shot:t5 X w400 X w400 shot:t7 X w500 shot:t8 X w500 shot:t9 X w500 shot:t10 X w500 X w700 shot:t11 X w500 w900 estado:fim",
     # Set the first hand card (a monster: DOWN picks Set), end the turn, let the opponent attack it, answer YES to the FLIP prompt
+    # one card in hand (--solo) and `resolver` (tf.py): presses X until the state stops changing; no fixed waits, so the same script fits any Spell
+    'ativar_r': PRE + "X w100 resolver shot:d9 estado:fim",
     'virar': PRE + "DOWN w30 X w300 shot:t1 O w60 RIGHT w60 RIGHT w60 X w200 w3000 shot:t5 X w400 shot:t6 X w400 shot:t7 X w400 shot:t8 w600 estado:fim",
     # summon it, Battle Phase, attack the first target; stops at the "Activate the effect?" prompt if there is one
     'atacar': PRE + "X w300 O w60 RIGHT w20 X w100 X w100 X w100 X w700 shot:d3 estado:fim",
     # same, answers YES, picks the first card / position offered and lets the effect finish
     'atacar_sim': PRE + "X w300 O w60 RIGHT w20 X w100 X w100 X w100 X w700 shot:d3 X w300 w1000 shot:d4 X w400 w400 shot:d5 estado:fim",
 }
+SOLO = False   # --solo: the forced card plus the --hand cards only (hand slots 1.. instead of 3..)
 JOG, PASSO, CASAS = 0x09f79cec, 0xfac, 0x09f79d1c   # player block (life points first), size of a block, first card zone
 
 
@@ -64,9 +68,11 @@ class Lado:
         self.hand = [struct.unpack_from('<I', w, 0x120 + i * 4)[0] & 0x1fff for i in range(min(self.n_hand, 12))]
         self.field = [(struct.unpack_from('<I', w, 0x30 + s * 0x14)[0] & 0x1fff, struct.unpack_from('<I', w, 0x34 + s * 0x14)[0]) for s in range(5)]
         self.field = [f for f in self.field if f[0]]
+        self.n_grave = struct.unpack_from('<I', w, 20)[0]
+        self.grave = [struct.unpack_from('<I', w, 0x710 + i * 4)[0] & 0x1fff for i in range(min(self.n_grave, 12))]
 
     def dict(self):
-        return {'lp': self.lp, 'deck': self.deck, 'n_hand': self.n_hand, 'hand': self.hand, 'field': self.field}
+        return {'lp': self.lp, 'deck': self.deck, 'n_hand': self.n_hand, 'hand': self.hand, 'field': self.field, 'grave': self.grave}
 
 
 class Estado:
@@ -93,7 +99,7 @@ def ler_estado(env):
     """Reads both players from the running instance of this TF_TAG."""
     lados = []
     for p in (0, 1):
-        o = subprocess.run([sys.executable, TF, 'peek', '%08x' % (JOG + p * PASSO), '512'], env=env, capture_output=True, text=True).stdout.split()
+        o = subprocess.run([sys.executable, TF, 'peek', '%08x' % (JOG + p * PASSO), '2048'], env=env, capture_output=True, text=True).stdout.split()
         lados.append(Lado(bytes.fromhex(o[-1])))
     return Estado(*lados)
 
@@ -159,7 +165,7 @@ def poke_cemiterio(cid, mods, spec, grave):
 def um(cid, mods, extra, rot, spec, checks, shots, grave=None, mao=None):
     tag = 'l%s' % cid
     if mao:   # --hand: ids written over hand slots 3, 4, ... (slots 0-2 hold the forced card)
-        words = ['poke:%08x:%s' % (JOG + 0x120 + 4 * (3 + k), struct.pack('<I', int(i)).hex()) for k, i in enumerate(mao.split(','))]
+        words = ['poke:%08x:%s' % (JOG + 0x120 + 4 * ((1 if SOLO else 3) + k), struct.pack('<I', int(i)).hex()) for k, i in enumerate(mao.split(','))]
         rot = rot.replace('estado:ini', ' '.join(words) + ' estado:ini', 1)
     if grave:
         rot = rot.replace('estado:ini', poke_cemiterio(cid, mods, spec, grave) + 'estado:ini', 1)
@@ -225,12 +231,13 @@ def resumo(cid, estados):
     if 'ini' not in estados or 'fim' not in estados:
         return '%s: no state read' % cid
     i, f = estados['ini'], estados['fim']
-    return '%s: LP me %d>%d op %d>%d | deck me %d>%d op %d>%d | hand me %d>%d op %d>%d | field me %s op %s' % (
-        cid, i.me.lp, f.me.lp, i.op.lp, f.op.lp, i.me.deck, f.me.deck, i.op.deck, f.op.deck, i.me.n_hand, f.me.n_hand, i.op.n_hand, f.op.n_hand,
+    return '%s: LP me %d>%d op %d>%d | deck me %d>%d op %d>%d | hand me %d>%d op %d>%d | grave me %d>%d | field me %s op %s' % (
+        cid, i.me.lp, f.me.lp, i.op.lp, f.op.lp, i.me.deck, f.me.deck, i.op.deck, f.op.deck, i.me.n_hand, f.me.n_hand, i.op.n_hand, f.op.n_hand, i.me.n_grave, f.me.n_grave,
         [x[0] for x in f.me.field], [x[0] for x in f.op.field])
 
 
 def main():
+    global SOLO
     a = sys.argv[1:]
     def opt(nome, padrao=None):
         return a[a.index(nome) + 1] if nome in a else padrao
@@ -247,6 +254,9 @@ def main():
         v = opt('--spec'); spec = json.load(open(v, encoding='utf-8')) if os.path.exists(v) else json.loads(v)
         if 'effects' not in spec and 'stats' not in spec:
             spec = {'effects': spec}
+    if '--solo' in a:   # hand of exactly one card (the forced one): the extra X presses of `resolver` cannot activate a second copy
+        SOLO = True
+        rot = rot.replace('estado:ini', 'poke:%08x:%s estado:ini' % (JOG + 12, struct.pack('<I', 1 + len((opt('--hand') or '').split(',') if opt('--hand') else [])).hex()), 1)
     shots = '--rapido' not in a   # fast mode (no rasterization) is NOT the same duel as the full mode and its fixed waits drift: experimental
     if not shots:
         rot = ' '.join(w for w in rot.split() if not w.startswith('shot:'))   # fast mode does not rasterize: screenshots would be black
