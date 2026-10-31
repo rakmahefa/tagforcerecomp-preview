@@ -165,3 +165,5 @@ Trigger donors for draw / search records: Dark Mimic LV3 (6102, "sent to the Gra
 
 `tools/test/tf3_flip_kinds.py` prints the game's FLIP classification (1 = FLIP) of card ids in one session; every TF1 FLIP monster tried (Man-Eater Bug, Cyber Jar, Old Vindictive Magician, ...) answers 1. `tf3_lote.py --rot virar` Sets the first hand card (a monster), ends the turn and lets the opponent attack it.
 Battle-damage donor: Des Volstgalph (5408, "destroys a monster by battle, inflicts damage") gives Fossil Tusker `{"like": 5408, "trigger_like": 5408, "trigger_event": "battle", "lp": {"opp": -400}}`. Checked with `tf3_lote.py` (`atacar`): the opponent loses the battle damage plus the 400 (control run with 0: only the battle damage).
+
+The White Stone of Legend uses the Sangan donor (4054) with `"name_has": "Blue-Eyes White Dragon"`. Checked by battle destruction (`virar`, loose filter): Deck -2, hand +1.
