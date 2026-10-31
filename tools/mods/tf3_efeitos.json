@@ -207,5 +207,7 @@
  "7810": {"like": 5423, "trigger_like": 5423, "zone": "deck", "filter": {"monster": true, "name_has": "Genex", "atk_max": 1500}},
  "6905": {"like": 4842},
  "7165": {"like": 6356, "zone": "deck", "filter": {"monster": true, "type": "reptile", "level_max": 4}},
- "6859": {"like": 6356, "zone": "hand", "filter": {"monster": true, "name_has": "Cyber Ogre"}}
+ "6859": {"like": 6356, "zone": "hand", "filter": {"monster": true, "name_has": "Cyber Ogre"}},
+ "7053": {"like": 4353, "lp": {"self": 3000}},
+ "6914": {"like": 4353, "lp": {"self": 500}}
 }
