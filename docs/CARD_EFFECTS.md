@@ -169,3 +169,5 @@ Battle-damage donor: Des Volstgalph (5408, "destroys a monster by battle, inflic
 The White Stone of Legend uses the Sangan donor (4054) with `"name_has": "Blue-Eyes White Dragon"`. Checked by battle destruction (`virar`, loose filter): Deck -2, hand +1.
 
 Special Summon from the Deck on battle destruction: Pyramid Turtle (5423) as `like` and `trigger_like` with `"zone": "deck"` and a filter (Nova Summoner, Genex Searcher; the "The Sanctuary in the Sky" alternative of Nova Summoner is not implemented). Checked with `virar` (Deck list opens, Deck -2 including the draw, hand unchanged).
+
+Not validated in a duel (donor data only; the test rig cannot revive from a poked Graveyard and cannot stage the trigger): Miraculous Rebirth `{"like": 4842}` (plain Monster Reborn, the "Chain Link 4" condition is not enforced), Snake Whistle `{"like": 6356, "zone": "deck", ...}` and Byroad Sacrifice `{"like": 6356, "zone": "hand", ...}` (Hero Signal donor: triggers on battle destruction only). Smoke-tested: the cards load, can be Set, and the duel runs normally.
