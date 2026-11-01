@@ -612,8 +612,19 @@ static uint32_t collection_entry(TfCpu *c, uint32_t id) {
 
 /* grant_copies: a ported card the player does not own yet is added to the collection (marked "new") so it shows up in the trunk. The game reloads
  * the save when Continue is pressed, so this runs every half second once a save is in memory; it only touches cards with 0 copies. */
+static void slifer_end_phase(TfCpu *c);
 static int hk_frame(TfCpu *c) {
     static uint64_t dbg_next;
+    {   /* End Phase: the duel step word 09f787b8 goes through 4 (just before 5 = turn change) when a turn ends */
+        static uint32_t phase = ~0u;
+        const uint32_t now = *(const uint32_t *)A->mem(0x09f787b8);
+        if (now != phase) { phase = now; if (now == 4) slifer_end_phase(c); }
+    }
+    if (getenv("TF3_DEBUG_PHASE")) {   /* research aid: logs every change of the duel step words */
+        static uint32_t last[4] = {~0u, ~0u, ~0u, ~0u};
+        const uint32_t now[4] = {*(uint32_t *)A->mem(0x09f787ac), *(uint32_t *)A->mem(0x09f787b8), *(uint32_t *)A->mem(0x09f7d460), *(uint32_t *)A->mem(0x09f790d0)};
+        if (memcmp(last, now, sizeof now)) { memcpy(last, now, sizeof now); A->log("phase words: 787ac %u 787b8 %u turn %u 790d0 %u (frame %llu)", now[0], now[1], now[2], now[3], (unsigned long long)A->frame()); }
+    }
     if (g_trunk_n && getenv("TF3_DEBUG_TRUNK") && A->frame() >= dbg_next) {
         dbg_next = A->frame() + 300;
         const uint16_t *ord = (const uint16_t *)A->mem(*(uint32_t *)A->mem(g_trunk_obj + 16)), *base = nullptr;
@@ -1573,6 +1584,20 @@ static int cand_debug(TfCpu *c, uint32_t fn, const char *what) {
     return 1;
 }
 static int hk_cand_run_debug(TfCpu *c) { return cand_debug(c, F_CAND_RUN, "run"); }
+
+/* Slifer the Sky Dragon cannot be targeted. 09f538ac(effect object, side, slot) is the game's "may this effect target the monster of that zone" test shared by
+ * the target filters of the Spells / Traps / monster effects; it already refuses the face-up cards 4998 / 4999 / 5000 of the base game, so a face-up Slifer is
+ * refused the same way. */
+static int hk_target_legal(TfCpu *c) {
+    const uint32_t side = A->reg(c, 5), slot = A->reg(c, 6);
+    const uint16_t sl = slot_of(4999);
+    static const bool dbg = getenv("TF3_DEBUG_TARGET") != nullptr;
+    const bool hide = sl && side < 2 && slot < 5 && zone_card(side, slot) == sl;
+    if (dbg) { static int n; if (n++ < 400) A->log("target test: object %08x side %u slot %u card %u%s", A->reg(c, 4), side, slot, zone_card(side, slot < 5 ? slot : 0), hide ? " -> refused (Slifer)" : ""); }
+    if (!hide) return 0;
+    A->set_reg(c, 2, 0);
+    return 1;
+}
 static int hk_cand_count_debug(TfCpu *c) { return cand_debug(c, F_CAND_COUNT, "count"); }
 
 /* research aid (TF3_DEBUG_FN=addr,addr,...): logs the arguments and the result of the listed libduel functions (up to 8) while the duel runs; a call is shown
@@ -1713,14 +1738,25 @@ static int hk_flip_kind(TfCpu *c) {
  * which the action record at 09f788a4 keeps in bits 8..20 of its first word. While the scan runs, a new card flagged as a Summon trigger shows its donor's id
  * there, so the scan queues the donor's event; the effect object then carries the donor id and fx_card() maps it back to the new card. */
 static const uint32_t F_POST_ACTION = 0x09e89110, ACTION_STATE = 0x09f80000u - 30556u;
+static int post_action_inner(TfCpu *c);
+static void slifer_after_action(TfCpu *c, const uint32_t *rec);
 static int hk_post_action(TfCpu *c) {
+    static const bool all = getenv("TF3_DEBUG_POST_ALL") != nullptr;
+    uint32_t rec[6];   /* the action record as it was before the scan */
+    memcpy(rec, A->mem(ACTION_STATE), sizeof rec);
+    if (all) { static int n; if (n++ < 400) A->log("post action: type %u record %08x %08x %08x %08x %08x %08x", A->mem(0x09f80000u - 30532u)[0], rec[0], rec[1], rec[2], rec[3], rec[4], rec[5]); }
+    if (!post_action_inner(c)) A->call_original(c, F_POST_ACTION);
+    slifer_after_action(c, rec);
+    return 1;
+}
+static int post_action_inner(TfCpu *c) {
     uint32_t *w = (uint32_t *)A->mem(ACTION_STATE);
     const uint16_t id = (uint16_t)((*w >> 8) & 0x1fff);
     static const bool dbg = getenv("TF3_DEBUG_TRIG2") != nullptr;
     static const uint32_t dbg_id = getenv("TF3_DEBUG_POST") ? (uint32_t)atoi(getenv("TF3_DEBUG_POST")) : 0;   /* also log the actions of this card (a game card to compare with) */
     if ((dbg && id >= 6958) || (dbg_id && id == dbg_id)) { static int n; if (n++ < 300) A->log("post action: record %08x id %u (action type %u)", *w, id, A->mem(0x09f80000u - 30532u)[0]); }
     const auto it = g_trig.find(id);
-    if (it == g_trig.end() || !g_trig_summon.count(id)) { g_trig_real.erase(id); return 0; }
+    if (it == g_trig.end() || !g_trig_summon.count(id)) { g_trig_real.erase(id); return 0; }   /* the caller runs the native scan */
     const uint32_t saved = *w;
     const size_t scope = g_trigger_scope.size();
     // The action record stores its controller in bit 0.
@@ -1736,6 +1772,58 @@ static int hk_post_action(TfCpu *c) {
     g_trigger_scope.resize(scope);
     if (((*w >> 8) & 0x1fff) == it->second) *w = (*w & ~(0x1fffu << 8)) | (saved & (0x1fffu << 8));
     return 1;
+}
+
+/* Slifer the Sky Dragon: "when the opponent Summons or Flip Summons a monster with 2000 DEF or less, destroy it". The engine has no event for it, so after every
+ * action the zones are compared with the previous snapshot: a face-up monster that appeared where there was none (Summon, Special Summon, Flip Summon) while the
+ * other side has a face-up Slifer with its effect active is destroyed through the native removal 09f34d64(side, slot, 14, 3 = by the opponent's effect, source id). */
+static uint32_t g_sl_prev[2][5], g_sl_buf;
+static bool g_sl_busy;
+static bool g_sl_special[2][5];   /* a face-up Slifer that was Special Summoned (it appeared during an action of another card) */
+static void slifer_after_action(TfCpu *c, const uint32_t *rec) {
+    const uint16_t sl = slot_of(4999);
+    if (!sl || g_sl_busy) return;
+    g_sl_busy = true;
+    uint32_t cur[2][5];
+    for (uint32_t s = 0; s < 2; s++) for (uint32_t k = 0; k < 5; k++) cur[s][k] = zone_card(s, k);
+    static const bool dbg = getenv("TF3_DEBUG_SLIFER") != nullptr;
+    for (uint32_t s = 0; s < 2; s++) for (uint32_t k = 0; k < 5; k++) {
+        if (cur[s][k] != sl) { g_sl_special[s][k] = false; continue; }
+        if (g_sl_prev[s][k]) continue;
+        g_sl_special[s][k] = ((rec[0] >> 8) & 0x1fff) != sl;   /* a Normal Summon / Flip Summon is the action of Slifer itself */
+        if (dbg) A->log("slifer: appeared at side %u slot %u during the action of card %u -> %s", s, k, (rec[0] >> 8) & 0x1fff, g_sl_special[s][k] ? "Special Summon" : "Normal / Flip Summon");
+    }
+    for (uint32_t side = 0; side < 2; side++) {
+        const uint32_t owner = 1 - side;
+        bool guard = false;
+        for (uint32_t k = 0; k < 5; k++) if (cur[owner][k] == sl && zone_effect_active(owner, k)) guard = true;
+        if (!guard) continue;
+        for (uint32_t k = 0; k < 5; k++) {
+            if (!cur[side][k] || g_sl_prev[side][k]) continue;
+            if (!g_sl_buf) g_sl_buf = A->guest_alloc(256);
+            if (!g_sl_buf) continue;
+            call_game(c, F_STATS, side, k, g_sl_buf, 0);
+            const int32_t def = *(const int32_t *)A->mem(g_sl_buf + 24);
+            if (dbg) A->log("slifer: side %u slot %u card %u appeared, DEF %d%s", side, k, cur[side][k], def, def <= 2000 ? " -> destroy" : "");
+            if (def > 2000) continue;
+            call_game6(c, 0x09f34d64, side, k, 14, 3, sl, 0);
+            cur[side][k] = zone_card(side, k);
+        }
+    }
+    memcpy(g_sl_prev, cur, sizeof cur);
+    g_sl_busy = false;
+}
+
+/* "If Special Summoned, it is sent to the Graveyard during the End Phase." */
+static void slifer_end_phase(TfCpu *c) {
+    const uint16_t sl = slot_of(4999);
+    if (!sl) return;
+    for (uint32_t s = 0; s < 2; s++) for (uint32_t k = 0; k < 5; k++) {
+        if (!g_sl_special[s][k] || zone_card(s, k) != sl) continue;
+        if (getenv("TF3_DEBUG_SLIFER")) A->log("slifer: End Phase, sending the Special Summoned Slifer (side %u slot %u) to the Graveyard", s, k);
+        g_sl_special[s][k] = false;
+        call_game6(c, 0x09f34d64, s, k, 14, 2, sl, 0);
+    }
 }
 
 /* Battle triggers: the battle resolution 09ea28d8(side) reads the card ids of the two fighters from the battle records (0x38 bytes each, id at 09f77ddc + 0x38 * side)
@@ -1935,7 +2023,7 @@ extern "C" __declspec(dllexport) int tfmod_init(const TfModApi *api) {
         A->hook(0x09ea00fc, hk_after_attack_mark);
         A->hook(0x09ea53f4, hk_after_attack_defense);
     }
-    if (!g_trig_summon.empty()) A->hook(F_POST_ACTION, hk_post_action);
+    if (!g_trig_summon.empty() || slot_of(4999) || getenv("TF3_DEBUG_POST_ALL")) A->hook(F_POST_ACTION, hk_post_action);
     if (real_event_ids() && !g_trig.empty()) A->hook(0x09eb53b0, hk_event_store);
     if (!g_trig_battle.empty() || getenv("TF3_DEBUG_BATTLE")) { A->hook(F_BATTLE, hk_battle); A->hook(F_BATTLE_DMG, hk_battle_dmg); }
     if (!g_stat.empty()) {
@@ -1971,6 +2059,7 @@ extern "C" __declspec(dllexport) int tfmod_init(const TfModApi *api) {
     }
     if (getenv("TF3_DEBUG_CAND")) { A->hook(F_CAND_RUN, hk_cand_run_debug); A->hook(F_CAND_COUNT, hk_cand_count_debug); }
     else if (!g_fx.empty()) { A->hook(F_CAND_RUN, hk_cand_run); A->hook(F_CAND_COUNT, hk_cand_count); A->hook(F_MOVE_PICKED, hk_move_to_hand); }
+    if (slot_of(4999)) A->hook(0x09f538ac, hk_target_legal);
     if (!g_amt.empty()) A->hook(F_DRAW, hk_draw);
     A->hook(F_LP_AMOUNTS, hk_lp_amounts);
     A->hook(F_EFFECT_DRIVER, hk_effect_driver);
