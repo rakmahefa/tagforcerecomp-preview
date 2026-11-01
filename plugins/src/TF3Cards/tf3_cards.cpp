@@ -1421,6 +1421,10 @@ static int32_t stat_cond_count(const StatRule &r, uint32_t ss, int excl_slot) {
         const bool own = cs == ss;
         const uint8_t cside = r.cond_side & 3;
         if (cside == 1 ? !own : cside == 2 ? own : false) continue;
+        if (r.cond_side & 8) {   /* count the cards in the hand (Slifer the Sky Dragon) */
+            n += (int32_t)*(const uint32_t *)A->mem(DUEL_SIDES + cs * DUEL_SIDE_SIZE + 12);
+            continue;
+        }
         if (r.cond_side & 4) {   /* count the Graveyard cards of the id set instead of the monsters of the field */
             const uint32_t base = DUEL_SIDES + cs * DUEL_SIDE_SIZE, gn = *(const uint32_t *)A->mem(base + 20);
             for (uint32_t gk = 0; gk < gn && gk < 160; gk++)
@@ -1488,8 +1492,12 @@ static int hk_stats(TfCpu *c) {
                 int32_t mult = 1;
                 if (r.cond_side) {
                     const int32_t n = stat_cond_count(r, ss, (int)sk);
-                    if (!n) continue;
+                    if (!n && !(r.per & 4)) continue;
                     mult = (r.per & 1) ? n : 1;
+                }
+                if (r.per & 4) {   /* "set": the value replaces the card's printed ATK / DEF ('?') instead of adding to it */
+                    *atk = r.atk * mult; *def = r.def * mult;
+                    continue;
                 }
                 if (r.per & 2) mult *= *(const int32_t *)A->mem(out + 16);
                 *atk += r.atk * mult; *def += r.def * mult;
