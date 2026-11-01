@@ -2,6 +2,11 @@
 
 Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [SemVer](https://semver.org/).
 
+## [Unreleased]
+
+### Added
+- The launcher checks GitHub once at startup for a newer release and shows an "Update available" button on the bottom bar. It opens the release notes (the GitHub release text) with "Update now" (opens the download page) and "Later". The About page shows the current version. Turn it off with `verificar_atualizacao=0` under `[geral]` in `tagforce_recomp.ini`.
+
 ## [0.5.2] - 2026-10-28
 
 ### Added

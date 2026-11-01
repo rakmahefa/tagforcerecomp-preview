@@ -4,4 +4,4 @@
 set -e
 export PATH=/c/msys64/ucrt64/bin:$PATH
 echo "g++ $1"
-g++ -std=c++17 ${CXXOPT:--O2} -g -DPSP_TRACE "-DTF_GAME_ID=\"$GAMEID\"" -Wall -Wno-misleading-indentation -Iruntime -Iruntime/core -Iruntime/hle -Iruntime/gpu -Iruntime/ui -Iruntime/audio -Iruntime/mods -MMD -MF "${2%.o}.d" -c "$1" -o "$2"
+g++ -std=c++17 ${CXXOPT:--O2} -g -DPSP_TRACE "-DTF_GAME_ID=\"$GAMEID\"" "-DTF_APP_VERSION=\"${APPVER:-0.0.0}\"" -Wall -Wno-misleading-indentation -Iruntime -Iruntime/core -Iruntime/hle -Iruntime/gpu -Iruntime/ui -Iruntime/audio -Iruntime/mods -MMD -MF "${2%.o}.d" -c "$1" -o "$2"

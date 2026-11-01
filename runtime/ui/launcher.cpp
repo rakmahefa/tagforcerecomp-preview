@@ -17,6 +17,7 @@
 #include <atomic>
 #include <vector>
 #include <algorithm>
+#include <winhttp.h>
 #include "dark_ui.h"
 #include "util.h"
 #include "gameid.h"
@@ -29,11 +30,20 @@
 typedef void (*InstProgress)(double frac, const wchar_t *msg, void *ctx);
 bool iso_install(const wchar_t *iso, const wchar_t *dest, InstProgress cb, void *ctx, std::wstring *err);
 
-enum { ID_PICK = 101, ID_PLAY = 102, ID_QUIT = 103, ID_STOP = 105, ID_LOGS = 106, ID_SAVES = 107, ID_MODDIR = 108, ID_MODALL = 109, ID_TEXDIR = 110, ID_COPT0 = 400, ID_OPT0 = 200, ID_QOPT0 = 300, TIMER_UI = 1 };
+enum { ID_PICK = 101, ID_PLAY = 102, ID_QUIT = 103, ID_STOP = 105, ID_LOGS = 106, ID_SAVES = 107, ID_MODDIR = 108, ID_MODALL = 109, ID_UPDATE = 111, ID_TEXDIR = 110, ID_COPT0 = 400, ID_OPT0 = 200, ID_QOPT0 = 300, TIMER_UI = 1 };
 enum { PG_PLAY, PG_GRAPHICS, PG_GAME, PG_MODS, PG_CHEATS, PG_ABOUT, N_PAGES };
 enum { NAV_QUIT = N_PAGES };   /* item extra da sidebar (nao e pagina) */
 static const wchar_t *kNavName[N_PAGES] = {L"Play", L"Graphics", L"Game", L"Mods", L"Cheats", L"About"};
 static HWND g_wnd, g_bpick, g_play, g_bstop, g_blogs, g_bsaves, g_bmoddir, g_bmodall, g_btex;
+static HWND g_bupd;
+static std::wstring g_upd_ver, g_upd_url, g_upd_notes;   /* newer GitHub release found by the background check (empty = none) */
+#ifndef TF_APP_VERSION
+#define TF_APP_VERSION "0.0.0"
+#endif
+#define TF_W2(x) L##x
+#define TF_W(x) TF_W2(x)
+#define TF_APP_VERSION_W TF_W(TF_APP_VERSION)
+#define WM_UPDATE_FOUND (WM_APP + 7)
 static HANDLE g_proc;                       /* jogo em andamento (processo filho); a janela continua aberta */
 static int g_page = PG_PLAY, g_navhot = -1;
 
@@ -118,6 +128,61 @@ static int S(int v) { return MulDiv(v, g_dpi, 96); }
 /* medidas em 96 dpi */
 static const int W96 = 1120, H96 = 720, SIDE96 = 220, BAR96 = 72;
 
+/* "0.5.10" -> {0,5,10}; a leading v and any suffix after the digits are ignored */
+static bool parse_ver(const std::string &t, int v[3]) {
+    v[0] = v[1] = v[2] = 0; size_t i = 0; if (i < t.size() && (t[i] == 'v' || t[i] == 'V')) i++;
+    if (i >= t.size() || !isdigit((unsigned char)t[i])) return false;
+    for (int k = 0; k < 3; k++) {
+        while (i < t.size() && isdigit((unsigned char)t[i])) v[k] = v[k] * 10 + (t[i++] - '0');
+        if (i < t.size() && t[i] == '.') i++; else break;
+    }
+    return true;
+}
+/* first "key": "value" of the JSON text, unescaped to UTF-8 (the release JSON is flat enough for this) */
+static std::string json_str(const std::string &j, const char *key) {
+    size_t p = j.find(std::string("\"") + key + "\""); if (p == std::string::npos) return "";
+    p = j.find('"', j.find(':', p) + 1); if (p == std::string::npos) return "";
+    std::string o; unsigned pend = 0;
+    auto put = [&](unsigned cp) { if (cp < 0x80) o += (char)cp; else if (cp < 0x800) { o += (char)(0xC0 | cp >> 6); o += (char)(0x80 | (cp & 63)); }
+        else if (cp < 0x10000) { o += (char)(0xE0 | cp >> 12); o += (char)(0x80 | ((cp >> 6) & 63)); o += (char)(0x80 | (cp & 63)); }
+        else { o += (char)(0xF0 | cp >> 18); o += (char)(0x80 | ((cp >> 12) & 63)); o += (char)(0x80 | ((cp >> 6) & 63)); o += (char)(0x80 | (cp & 63)); } };
+    for (size_t i = p + 1; i < j.size(); i++) {
+        char c = j[i]; if (c == '"') break;
+        if (c != '\\' || i + 1 >= j.size()) { o += c; continue; }
+        c = j[++i];
+        if (c == 'n') o += '\n'; else if (c == 'r') {} else if (c == 't') o += ' ';
+        else if (c == 'u' && i + 4 < j.size()) {
+            unsigned cp = (unsigned)strtoul(j.substr(i + 1, 4).c_str(), nullptr, 16); i += 4;
+            if (cp >= 0xD800 && cp < 0xDC00) { pend = cp; continue; }
+            if (cp >= 0xDC00 && cp < 0xE000 && pend) cp = 0x10000 + ((pend - 0xD800) << 10) + (cp - 0xDC00);
+            pend = 0; put(cp);
+        } else o += c;   /* escaped quote, backslash, slash */
+    }
+    return o;
+}
+/* Asks GitHub for the latest release once at startup (background thread, short timeouts, silent on any failure). */
+static void update_check_thread(HWND wnd) {
+    HINTERNET s = WinHttpOpen(L"TagForceRecomp-UpdateCheck/1.0", WINHTTP_ACCESS_TYPE_AUTOMATIC_PROXY, WINHTTP_NO_PROXY_NAME, WINHTTP_NO_PROXY_BYPASS, 0), c = nullptr, r = nullptr;
+    std::string body;
+    if (s) { WinHttpSetTimeouts(s, 4000, 4000, 4000, 6000); c = WinHttpConnect(s, L"api.github.com", INTERNET_DEFAULT_HTTPS_PORT, 0); }
+    if (c) r = WinHttpOpenRequest(c, L"GET", L"/repos/Artknighty/tagforcerecomp-preview/releases/latest", nullptr, WINHTTP_NO_REFERER, WINHTTP_DEFAULT_ACCEPT_TYPES, WINHTTP_FLAG_SECURE);
+    if (r && WinHttpSendRequest(r, L"Accept: application/vnd.github+json\r\n", (DWORD)-1, nullptr, 0, 0, 0) && WinHttpReceiveResponse(r, nullptr)) {
+        DWORD code = 0, n = sizeof code; WinHttpQueryHeaders(r, WINHTTP_QUERY_STATUS_CODE | WINHTTP_QUERY_FLAG_NUMBER, nullptr, &code, &n, nullptr);
+        char buf[4096]; while (code == 200 && body.size() < (1u << 20) && WinHttpReadData(r, buf, sizeof buf, &n) && n) body.append(buf, n);
+    }
+    if (r) WinHttpCloseHandle(r); if (c) WinHttpCloseHandle(c); if (s) WinHttpCloseHandle(s);
+    if (body.empty() || body.find("\"draft\":true") != std::string::npos || body.find("\"prerelease\":true") != std::string::npos) return;
+    std::string tag = json_str(body, "tag_name"), url = json_str(body, "html_url");
+    int a[3], b[3]; if (!parse_ver(tag, a) || !parse_ver(TF_APP_VERSION, b) || url.compare(0, 8, "https://") != 0) return;
+    if (std::lexicographical_compare(b, b + 3, a, a + 3)) {
+        g_upd_ver.assign(tag.begin(), tag.end()); g_upd_url.assign(url.begin(), url.end());
+        std::string notes = json_str(body, "body"); for (size_t k; (k = notes.find("**")) != std::string::npos;) notes.erase(k, 2);   /* plain text: drop the bold marks */
+        int wn = MultiByteToWideChar(CP_UTF8, 0, notes.c_str(), (int)notes.size(), nullptr, 0); std::wstring w(wn, L'\0'); MultiByteToWideChar(CP_UTF8, 0, notes.c_str(), (int)notes.size(), &w[0], wn);
+        g_upd_notes.clear(); bool bol = true; for (wchar_t ch : w) { if (bol && ch == L'#') continue; if (ch == L'\n') bol = true; else if (ch != L' ') bol = false;   /* headings: drop the # marks */
+         if (ch == L'\n') g_upd_notes += L'\r'; g_upd_notes += ch; }
+        PostMessageW(wnd, WM_UPDATE_FOUND, 0, 0);
+    }
+}
 static std::wstring ini_path() { return app_ini_path(); }
 static bool file_exists(const std::wstring &p) { DWORD a = GetFileAttributesW(p.c_str()); return a != INVALID_FILE_ATTRIBUTES && !(a & FILE_ATTRIBUTE_DIRECTORY); }
 static bool dir_exists(const std::wstring &p) { DWORD a = GetFileAttributesW(p.c_str()); return a != INVALID_FILE_ATTRIBUTES && (a & FILE_ATTRIBUTE_DIRECTORY); }
@@ -258,7 +323,7 @@ static void focus_ring(HDC dc, RECT r) {
 static void draw_button_dc(const DRAWITEMSTRUCT *d, HDC dc) {
     RECT r = d->rcItem; const int id = (int)d->CtlID; bool primary = id == ID_PLAY, off = (d->itemState & ODS_DISABLED) != 0, down = (d->itemState & ODS_SELECTED) != 0;
     bool hot = !off && is_hot(d->hwndItem);
-    bool onbar = id == ID_PLAY || id == ID_STOP;   /* estes ficam sobre a barra inferior */
+    bool onbar = id == ID_PLAY || id == ID_STOP || id == ID_UPDATE;   /* estes ficam sobre a barra inferior */
     HBRUSH bgb = CreateSolidBrush(onbar ? C_SIDE : C_BG); FillRect(dc, &r, bgb); DeleteObject(bgb);
     wchar_t t[64]; GetWindowTextW(d->hwndItem, t, 64);
     SetBkMode(dc, TRANSPARENT);
@@ -499,7 +564,7 @@ static void paint(HWND h) {
         }
 } else {
         text(dc, g_fHead, C_TXT, RECT{cx, S(22), cx + cw, S(58)}, L"About");
-        text(dc, g_fSub, C_DIM, RECT{cx, S(58), cx + cw, S(80)}, L"Yu-Gi-Oh! GX Tag Force \x2014 PC recompilation");
+        text(dc, g_fSub, C_DIM, RECT{cx, S(58), cx + cw, S(80)}, (std::wstring(L"Yu-Gi-Oh! GX Tag Force \x2014 PC recompilation \x2014 version ") + TF_APP_VERSION_W).c_str());
         RECT p = {cx, S(104), cx + cw, S(280)};
         text(dc, g_fText, C_TXT, p, L"The original PSP game is statically recompiled to native Windows code. You need your own copy of the game: nothing from it is distributed with this program.\n\n"
                                     L"Graphics options can also be changed inside the game (Options > Graphics). Texture packages and mods live in the mods folder (the Mods page here turns them on or off and sets their priority) next to the program.", DT_LEFT | DT_WORDBREAK);
@@ -507,6 +572,40 @@ static void paint(HWND h) {
     }
     BitBlt(wdc, 0, 0, cr.right, cr.bottom, dc, 0, 0, SRCCOPY);
     SelectObject(dc, obm); DeleteObject(bm); DeleteDC(dc); EndPaint(h, &ps);
+}
+/* Release notes window: what changed in the new version, with "Update now" (opens the release page) and "Later". Modal over the launcher. */
+static int g_notes_res;
+static LRESULT CALLBACK notes_proc(HWND h, UINT m, WPARAM w, LPARAM l) {
+    switch (m) {
+    case WM_COMMAND: if (LOWORD(w) == IDOK || LOWORD(w) == IDCANCEL) { g_notes_res = LOWORD(w); DestroyWindow(h); } return 0;
+    case WM_CLOSE: g_notes_res = IDCANCEL; DestroyWindow(h); return 0;
+    case WM_DRAWITEM: { const DRAWITEMSTRUCT *d = (const DRAWITEMSTRUCT *)l; dark::draw_button(d, d->CtlID == IDOK, g_fBtn, MulDiv(1000, g_dpi, 96)); return TRUE; }
+    case WM_CTLCOLOREDIT: case WM_CTLCOLORSTATIC: { HDC dc = (HDC)w; SetTextColor(dc, C_TXT); SetBkColor(dc, C_CARD); return (LRESULT)dark::brush(C_CARD); }
+    case WM_ERASEBKGND: { RECT r; GetClientRect(h, &r); FillRect((HDC)w, &r, dark::brush(C_BG)); return 1; }
+    case WM_PAINT: {
+        PAINTSTRUCT ps; HDC dc = BeginPaint(h, &ps); SetBkMode(dc, TRANSPARENT); HGDIOBJ of = SelectObject(dc, g_fHead); SetTextColor(dc, C_TXT);
+        std::wstring t = L"Update available: " + g_upd_ver; TextOutW(dc, S(20), S(14), t.c_str(), (int)t.size());
+        SelectObject(dc, g_fSub); SetTextColor(dc, C_DIM); std::wstring c = L"You have " L"" TF_APP_VERSION_W L". What changed:"; TextOutW(dc, S(20), S(46), c.c_str(), (int)c.size());
+        SelectObject(dc, of); EndPaint(h, &ps); return 0; }
+    }
+    return DefWindowProcW(h, m, w, l);
+}
+static bool show_update_notes(HWND owner) {   /* true = the user chose "Update now" */
+    HINSTANCE hi = GetModuleHandleW(nullptr); static bool reg = false;
+    if (!reg) { WNDCLASSW wc = {}; wc.lpfnWndProc = notes_proc; wc.hInstance = hi; wc.lpszClassName = L"TagForceUpdateNotes"; wc.hCursor = LoadCursorW(nullptr, (LPCWSTR)IDC_ARROW); RegisterClassW(&wc); reg = true; }
+    const int W = S(640), H = S(520); RECT or_; GetWindowRect(owner, &or_);
+    HWND d = CreateWindowExW(WS_EX_DLGMODALFRAME, L"TagForceUpdateNotes", L"Tag Force Recomp - update", WS_POPUP | WS_CAPTION | WS_SYSMENU | WS_CLIPCHILDREN,
+        (or_.left + or_.right - W) / 2, (or_.top + or_.bottom - H) / 2, W, H, owner, nullptr, hi, nullptr);
+    RECT cr; GetClientRect(d, &cr); dark::title_bar(d);
+    HWND ed = CreateWindowW(L"EDIT", g_upd_notes.empty() ? L"No release notes were published for this version." : g_upd_notes.c_str(), WS_CHILD | WS_VISIBLE | WS_VSCROLL | ES_MULTILINE | ES_READONLY | ES_AUTOVSCROLL,
+        S(20), S(76), cr.right - S(40), cr.bottom - S(76) - S(70), d, nullptr, hi, nullptr);
+    SendMessageW(ed, WM_SETFONT, (WPARAM)g_fText, TRUE); dark::theme_control(ed);
+    auto b = [&](const wchar_t *t, int id, int x) { HWND x_ = CreateWindowW(L"BUTTON", t, WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_OWNERDRAW, x, cr.bottom - S(54), S(150), S(38), d, (HMENU)(INT_PTR)id, hi, nullptr); return x_; };
+    b(L"Update now", IDOK, cr.right - S(20) - S(150)); b(L"Later", IDCANCEL, cr.right - S(20) - S(150) - S(10) - S(110));
+    SetWindowPos(GetDlgItem(d, IDCANCEL), nullptr, 0, 0, S(110), S(38), SWP_NOMOVE | SWP_NOZORDER);
+    g_notes_res = IDCANCEL; EnableWindow(owner, FALSE); ShowWindow(d, SW_SHOW); SetFocus(GetDlgItem(d, IDOK));
+    MSG msg; while (IsWindow(d) && GetMessageW(&msg, nullptr, 0, 0) > 0) { if (msg.message == WM_KEYDOWN && msg.wParam == VK_ESCAPE) { SendMessageW(d, WM_CLOSE, 0, 0); continue; } if (!IsDialogMessageW(d, &msg)) { TranslateMessage(&msg); DispatchMessageW(&msg); } }
+    EnableWindow(owner, TRUE); SetForegroundWindow(owner); return g_notes_res == IDOK;
 }
 static void open_folder(const std::wstring &p) { CreateDirectoryW(p.c_str(), nullptr); ShellExecuteW(nullptr, L"open", p.c_str(), nullptr, nullptr, SW_SHOWNORMAL); }
 static LRESULT CALLBACK proc(HWND h, UINT m, WPARAM w, LPARAM l) {
@@ -523,6 +622,7 @@ static LRESULT CALLBACK proc(HWND h, UINT m, WPARAM w, LPARAM l) {
         case ID_STOP:
             if (game_running() && tf_msgbox(h, L"Close the game? Anything not saved inside the game will be lost.", L"Tag Force Recomp", MB_YESNO | MB_ICONQUESTION) == IDYES) { stop_game(); refresh(); }
             return 0;
+        case ID_UPDATE: if (!g_upd_url.empty() && show_update_notes(h)) ShellExecuteW(nullptr, L"open", g_upd_url.c_str(), nullptr, nullptr, SW_SHOWNORMAL); return 0;
         case ID_LOGS: open_folder(exe_dir() + L"logs"); return 0;
         case ID_SAVES: open_folder(exe_dir() + L"ms0"); return 0;
         case ID_MODDIR: mods_open_folder(); return 0;
@@ -577,6 +677,7 @@ static LRESULT CALLBACK proc(HWND h, UINT m, WPARAM w, LPARAM l) {
             }
         }
         return 0;
+    case WM_UPDATE_FOUND: { std::wstring t = L"Update available: " + g_upd_ver; SetWindowTextW(g_bupd, t.c_str()); ShowWindow(g_bupd, SW_SHOW); InvalidateRect(h, nullptr, FALSE); return 0; }
     case WM_CLOSE: SendMessageW(h, WM_COMMAND, ID_QUIT, 0); return 0;
     case WM_DESTROY: KillTimer(h, TIMER_UI); PostQuitMessage(0); return 0;
     }
@@ -635,9 +736,11 @@ std::string launcher_pick_iso(std::wstring *data) {
     { int by = cr.bottom - S(BAR96) + S(14), bh = S(42);
       g_play = btn(L"PLAY", ID_PLAY, cr.right - S(28) - S(190), by, S(190), bh);
       g_bstop = btn(L"Stop", ID_STOP, cr.right - S(28) - S(190) - S(10) - S(80), by, S(80), bh); }
+    g_bupd = btn(L"Update available", ID_UPDATE, cx, cr.bottom - S(BAR96) + S(14), S(300), S(42)); ShowWindow(g_bupd, SW_HIDE);
     SendMessageW(g_wnd, DM_SETDEFID, ID_PLAY, 0);
     SetTimer(g_wnd, TIMER_UI, 60, nullptr);
     mods_reload();
+    if (GetPrivateProfileIntW(L"geral", L"verificar_atualizacao", 1, ini_path().c_str()) != 0) std::thread(update_check_thread, g_wnd).detach();   /* verificar_atualizacao=0 turns it off */
     if (!g_installed) g_page = PG_GAME;   /* primeira vez: comeca pela instalacao */
     refresh();
     ShowWindow(g_wnd, SW_SHOW); UpdateWindow(g_wnd);

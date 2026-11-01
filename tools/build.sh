@@ -16,9 +16,10 @@ CPPSRCS=$(ls runtime/*/*.cpp decomp/decomp.cpp decomp/*/*.cpp)   # every runtime
 # incremental: each .cpp becomes a .o in gen/pkg/obj (tools/build/cc_one.sh, in parallel); only what changed (source or a header listed in the .d) is rebuilt
 OD=gen/pkg/obj; mkdir -p $OD
 GAMEID=ULES-00600
-STAMP="${OPT:--O2} $GAMEID"
+APPVER=${APPVER:-$(sed -n 's/^## \[\([0-9][0-9.]*\)\].*//p' CHANGELOG.md | head -1)}   # newest CHANGELOG entry = version the launcher update check compares against
+STAMP="${OPT:--O2} $GAMEID $APPVER"
 [ "$(cat $OD/flags.txt 2>/dev/null)" = "$STAMP" ] || { rm -f $OD/*.o $OD/*.d; echo "$STAMP" > $OD/flags.txt; }
-export CXXOPT="${OPT:--O2}" GAMEID
+export CXXOPT="${OPT:--O2}" GAMEID APPVER
 TODO=""; CPPOBJS=""
 for s in $CPPSRCS; do
   o=$OD/$(echo "${s%.cpp}" | tr '/' '_').o; CPPOBJS="$CPPOBJS $o"
@@ -31,7 +32,7 @@ for s in $CPPSRCS; do
 done
 if [ -n "$TODO" ]; then printf '%s\n' $TODO | tr ':' ' ' | xargs -P ${JOBS:-$(nproc)} -L1 sh tools/build/cc_one.sh; fi
 EXE="${OUT:-$PKG/TagForceRecomp.exe}"
-g++ -o "$EXE" $CPPOBJS gen/pkg/app_res.o -static -mwindows -ldwmapi -lgdi32 -luser32 -lcomdlg32 -lshell32 -lwinmm -lsynchronization -ld3d11 -ldxgi -ld3dcompiler -lole32 -loleaut32 -luuid -lwindowscodecs -lgdiplus
+g++ -o "$EXE" $CPPOBJS gen/pkg/app_res.o -static -mwindows -lwinhttp -ldwmapi -lgdi32 -luser32 -lcomdlg32 -lshell32 -lwinmm -lsynchronization -ld3d11 -ldxgi -ld3dcompiler -lole32 -loleaut32 -luuid -lwindowscodecs -lgdiplus
 if [ -z "$OUT" ]; then
   [ -d $PKG/tcc ] || python tools/package_release.py --no-build --version dev --out gen/pkg   # first time: tcc, tools/python, DLLs, mods, docs
   cp $PKG/TagForceRecomp.exe $PKG/TagForceRecomp_bg.exe 2>/dev/null || echo "note: TagForceRecomp_bg.exe is in use (a replay is running?): replays keep the previous build"

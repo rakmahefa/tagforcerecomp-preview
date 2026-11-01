@@ -133,8 +133,10 @@ def main():
         open(rc, 'w').write('1 24 "%s"\n1 ICON "%s"\n' % (manifest, icon))
         res = os.path.join(out, 'app_res.o'); run(['windres', rc, '-O', 'coff', '-o', res], env=env)
         srcs = [f.replace(os.sep, '/') for f in sorted(glob.glob('runtime/*/*.cpp')) + ['decomp/decomp.cpp'] + sorted(glob.glob('decomp/*/*.cpp'))]   # same set as tools/build.sh
-        run(['g++', '-std=c++17', '-O2', '-DPSP_TRACE', '-DTF_GAME_ID="ULES-00600"', '-Wall', '-Wno-misleading-indentation', '-Iruntime', '-Iruntime/core', '-Iruntime/hle', '-Iruntime/gpu', '-Iruntime/ui', '-Iruntime/audio', '-Iruntime/mods', '-o', exe] + srcs + [res,
-             '-static', '-mwindows', '-ldwmapi', '-lgdi32', '-luser32', '-lcomdlg32', '-lshell32', '-lwinmm', '-lsynchronization', '-ld3d11', '-ldxgi', '-ld3dcompiler',
+        import re
+        appver = re.search(r'^## \[([0-9][0-9.]*)\]', open(os.path.join(ROOT, 'CHANGELOG.md'), encoding='utf-8').read(), re.M).group(1)   # launcher update check compares against this
+        run(['g++', '-std=c++17', '-O2', '-DPSP_TRACE', '-DTF_GAME_ID="ULES-00600"', '-DTF_APP_VERSION="%s"' % appver, '-Wall', '-Wno-misleading-indentation', '-Iruntime', '-Iruntime/core', '-Iruntime/hle', '-Iruntime/gpu', '-Iruntime/ui', '-Iruntime/audio', '-Iruntime/mods', '-o', exe] + srcs + [res,
+             '-static', '-mwindows', '-lwinhttp', '-ldwmapi', '-lgdi32', '-luser32', '-lcomdlg32', '-lshell32', '-lwinmm', '-lsynchronization', '-ld3d11', '-ldxgi', '-ld3dcompiler',
              '-lole32', '-loleaut32', '-luuid', '-lwindowscodecs', '-lgdiplus'], env=env)
     elif not os.path.exists(exe):
         sys.exit('--no-build needs an exe; build once without it')
