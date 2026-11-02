@@ -22,13 +22,15 @@
  *      or, in game, by holding L + R and pressing LEFT / RIGHT. It starts at 1x unless the launcher's Cheats page sets a starting speed (fast_forward= in config.ini); changes made in game are not saved.
  *   4. Unlock everything (Cheats menu, one-shot): edits the save the game keeps in RAM (BOOT save_estado 0883d698, the same 0xFCA8-byte block
  *      the game writes to DATA0 on its next save). It adds every card to the collection (3 copies, marked as seen), makes every card pack
- *      available in the shop and gives every duelist all of his real decks in the Free Duel opponent list. Nothing else (story progress, DP,
- *      level and the save flags) is touched. Save layout (BOOT functions save_*, carta_*, pacote_*, and decomp/libtitle):
+ *      available in the shop, unlocks character recipes and gives duelists their decks in Free Duel. It also maximizes DP.
+ *      Save layout (BOOT functions save_*, carta_*, pacote_*, and decomp/libtitle):
  *        +0x0068 + character*0x12: duelist record (u16 state (CardState, 3 = character fully owned: set by the unlock), u16 count, u16 deck[6] unlocked decks, u16 ...); characters 2..151
  *                                  (the Free Duel opponent list shows the characters whose count is not zero: libcharalist BuildLists)
+ *        +0x0BA8 + recipe*2:      recipe flags (bit 0 unlocked, bits 1..8 source character)
  *        +0x0EC4 + character*8:    duel record against that duelist (u16 wins, u16 losses, u16 draws, u16 pad); not touched
  *        +0x155C + card_index*4:   card entry (byte0 bit0 flag, bits 1-2 status 0 unseen / 1 new / 2 seen, byte1 bit7 flag + bits 0-6 copies)
  *        +0x8FF4 + pack*0x2A:      pack (byte0 shop value, byte1 bits 0-1 state: 0 locked, 1 seen, 2 available), packs 0..47
+ *        +0x97EC:                  highest unlocked story part (u32); independent of the current story at +0x97F0
  *   5. Save state / Load state (F1 / F12, four slots; runtime/core/savestate.cpp): the whole machine goes back to the saved point in a few milliseconds.
  *      For tests and practice. A state lives in memory only (gone when the game closes) and is refused while a movie plays. The cheat just asks; the
  *      runtime does it between two thread slices.
@@ -71,12 +73,13 @@ static int g_speed = 1;      /* 3. fast-forward: current speed; the starting spe
 static int g_speed_start = 1;
 static const int SPEED_MAX = 8;
 static int g_enabled = 1;    /* master switch (launcher): 0 = none of the cheats is loaded */
+static int g_no_banlist = 0, g_free_copies = 0;
 std::wstring cheats_ini_path(void) {   /* cheats.ini next to the player's ini (TF_INI moves both, so tests never touch the player's settings) */
     std::wstring p = app_ini_path(); const size_t k = p.find_last_of(L"/\\");
     return (k == std::wstring::npos ? std::wstring() : p.substr(0, k + 1)) + L"cheats.ini";
 }
 static void cfg_save(void) {
-    if (FILE *f = _wfopen(cheats_ini_path().c_str(), L"w")) { fprintf(f, "enabled=%d\nshow_opponent_cards=%d\npanel_corner=%d\ndp_multiplier=%d\nunlock_on_start=%d\nfast_forward=%d\n", g_enabled, g_ver, g_canto, g_mult, g_unlock_auto, g_speed_start); fclose(f); }
+    if (FILE *f = _wfopen(cheats_ini_path().c_str(), L"w")) { fprintf(f, "enabled=%d\nshow_opponent_cards=%d\npanel_corner=%d\ndp_multiplier=%d\nunlock_on_start=%d\nfast_forward=%d\nno_banlist=%d\nfree_copies=%d\n", g_enabled, g_ver, g_canto, g_mult, g_unlock_auto, g_speed_start, g_no_banlist, g_free_copies); fclose(f); }
 }
 static bool cfg_read(const std::wstring &path, bool *tem_mult) {
     FILE *f = _wfopen(path.c_str(), L"r"); if (!f) return false;
@@ -86,6 +89,8 @@ static bool cfg_read(const std::wstring &path, bool *tem_mult) {
         else if (sscanf(l, "show_opponent_cards=%d", &v) == 1) g_ver = v != 0;
         else if (sscanf(l, "unlock_on_start=%d", &v) == 1) g_unlock_auto = v != 0;
         else if (sscanf(l, "fast_forward=%d", &v) == 1) g_speed_start = std::max(1, std::min(SPEED_MAX, v));
+        else if (sscanf(l, "no_banlist=%d", &v) == 1) g_no_banlist = v != 0;
+        else if (sscanf(l, "free_copies=%d", &v) == 1) g_free_copies = v != 0;
         else if (sscanf(l, "panel_corner=%d", &v) == 1) g_canto = std::max(0, std::min(3, v));
         else if (sscanf(l, "dp_multiplier=%d", &v) == 1) { g_mult = std::max(1, std::min(MULT_MAX, v)); *tem_mult = true; }
     }
@@ -109,6 +114,8 @@ static void cfg_load(void) {
     }
     if (const char *e = getenv("TF_CHEAT_VER")) g_ver = atoi(e) != 0;                              /* tests: override the file */
     if (const char *e = getenv("TF_DPMUL")) g_mult = std::max(1, std::min(MULT_MAX, atoi(e)));
+    if (const char *e = getenv("TF_CHEAT_NO_BANLIST")) g_no_banlist = atoi(e) != 0;
+    if (const char *e = getenv("TF_CHEAT_FREE_COPIES")) g_free_copies = atoi(e) != 0;
 }
 
 /* ------------------------------------------------------------------ 1. see the opponent's cards */
@@ -259,6 +266,8 @@ static void speed_quadro(void) {   /* L + R + LEFT/RIGHT on any screen */
 /* ------------------------------------------------------------------ 4. Unlock everything */
 static const uint32_t SAVE = 0x08a65418, SAVE_VERSION = 0x10002, F_COLECAO_ENTRADA = 0x0883de3c;
 static const uint32_t SAVE_DUELIST_RECORDS = 0x68, DUELIST_RECORD_SIZE = 0x12, DUELIST_RECORD_DECKS = 6, DUELIST_STATE_COMPLETE = 3;
+static const uint32_t SAVE_RECIPES = 0xba8, F_RECIPE_EXISTS = 0x0884a5a4;
+static const uint32_t SAVE_STORY_PROGRESS = 0x97ec, STORY_PART_3 = 3;
 static const uint32_t SAVE_PACKS = 0x8ff4, PACK_SIZE = 0x2a, PACK_COUNT = 0x30, PACK_AVAILABLE = 2;
 static const uint32_t CARD_ID_LAST = 0x2000, CARD_COPIES = 3, CARD_STATUS_SEEN = 2;
 static bool g_unlock_pending;
@@ -307,15 +316,34 @@ static int unlock_duelists(void) {
     }
     return n;
 }
+/* Recipe Viewer reads a separate two-byte save entry for each recipe. Bit 0
+ * unlocks it; bits 1..8 identify the character who gave it to the player. */
+static int unlock_recipes(TfCpu *c) {
+    int n = 0;
+    for (uint32_t id = 1; id < duelist::kDeckCount; id++) {
+        if (!chama(c, F_RECIPE_EXISTS, id)) continue;
+        uint16_t &entry = *(uint16_t *)A->mem(SAVE + SAVE_RECIPES + id * 2);
+        if (entry & 1) continue;
+        const duelist::DeckOwner owner = duelist::OwnerOfDeck(id);
+        uint32_t character = owner.character;
+        if (id == duelist::kNightshroudDeck) character = duelist::kAtticus;
+        if (id == duelist::kBlairExtraDeck) character = duelist::kBlair;
+        entry = (uint16_t)((entry & 0xfe00) | ((character & 0xff) << 1) | 1);
+        n++;
+    }
+    return n;
+}
 static const int32_t DP_MAX = 999999999;   /* the game's cap */
 static void unlock_all(TfCpu *c) {
-    const int cards = unlock_cards(c), packs = unlock_packs(), duelists = unlock_duelists();
+    const int cards = unlock_cards(c), packs = unlock_packs(), duelists = unlock_duelists(), recipes = unlock_recipes(c);
+    uint32_t &story = *(uint32_t *)A->mem(SAVE + SAVE_STORY_PROGRESS);
+    if (story < STORY_PART_3) story = STORY_PART_3;
     const int32_t dp_before = (int32_t)chama(c, F_DP, 0);
     if (dp_before < DP_MAX) chama(c, F_DP_SOMAR, (uint32_t)(DP_MAX - dp_before));   /* player_dp_add respects the cap */
-    A->log("Unlock everything: %d cards, %d packs newly available, %d duelists, DP %d -> %d", cards, packs, duelists, dp_before, (int32_t)chama(c, F_DP, 0));
+    A->log("Unlock everything: %d cards, %d packs newly available, %d duelists, %d recipes newly available, story parts 1-3, DP %d -> %d", cards, packs, duelists, recipes, dp_before, (int32_t)chama(c, F_DP, 0));
     wchar_t l1[64], l2[64], l3[64], l4[64]; swprintf(l1, 64, L"Cards in the collection: %d (3 copies each)", cards);
     swprintf(l2, 64, L"Packs made available: %d", packs); swprintf(l3, 64, L"Duelists with all their decks: %d", duelists);
-    swprintf(l4, 64, L"DP: %d", (int)chama(c, F_DP, 0));
+    swprintf(l4, 64, L"Story parts 1-3 and DP: %d", (int)chama(c, F_DP, 0));
     const wchar_t *lines[4] = {l1, l2, l3, l4};
     A->message_box(L"Everything unlocked", lines, 4, L"Save the game to keep it");
 }
@@ -338,6 +366,44 @@ static void state_save_set(int v) { if (v) savestate_request(g_state_slot - 1, f
 static void state_load_set(int v) { if (v) savestate_request(g_state_slot - 1, true); }
 
 /* ------------------------------------------------------------------ */
+/* Deck editor and BOOT validation use separate checks. Free copies imply no
+ * banlist; they do not alter the collection stored in the save. */
+static bool g_checking_deck;
+static int hk_deck_rules(TfCpu *c) {
+    if (!g_free_copies) return 0;
+    g_checking_deck = true;
+    A->call_original(c, 0x0884a7f0);
+    g_checking_deck = false;
+    return 1;
+}
+static int hk_card_limit(TfCpu *c) {
+    if (!g_no_banlist && !g_free_copies) return 0;
+    A->set_reg(c, 2, g_free_copies ? 99 : 3);
+    return 1;
+}
+static int hk_owned_copies(TfCpu *c) {
+    if (!g_free_copies || (!g_checking_deck && !A->module_loaded("libdeck"))) return 0;
+    A->call_original(c, 0x0883deac);
+    if (A->reg(c, 2)) A->set_reg(c, 2, 99);
+    return 1;
+}
+static int hk_editor_count(TfCpu *c) {
+    const uint32_t ra = A->reg(c, 31);
+    if (!g_free_copies || !A->module_loaded("libdeck") || A->reg(c, 6) != 1 ||
+        !((ra >= 0x08efeab0u && ra < 0x08eff618u) || (ra >= 0x08effb00u && ra < 0x08f00204u))) return 0;
+    A->set_reg(c, 2, 0);
+    return 1;
+}
+/* The original row renderer reserves one digit for deck and side counts. */
+static int hk_editor_digits(TfCpu *c) {
+    const uint32_t ra = A->reg(c, 31);
+    if (g_free_copies && A->module_loaded("libdeck") && A->reg(c, 7) >= 10 && A->reg(c, 9) == 1 &&
+        ra >= 0x08f0f464u && ra < 0x08f0f6e0u) {
+        A->set_reg(c, 5, A->reg(c, 5) + 4);
+        A->set_reg(c, 9, 2);
+    }
+    return 0;
+}
 static int hk_quadro(TfCpu *c) { mult_quadro(); speed_quadro(); ver_cartas_quadro(c); unlock_quadro(c); return 0; }
 
 int cheats_init(const TfModApi *api) {   /* called by plugins_load; non-zero = not loaded (switched off in the launcher) */
@@ -349,7 +415,7 @@ int cheats_init(const TfModApi *api) {   /* called by plugins_load; non-zero = n
     A->add_slider(L"Card panel position (0 top left, 1 top right, 2 bottom left, 3 bottom right)", L"", 0, 3, 1, canto_get, canto_set);
     A->add_slider(L"&DP multiplier in duels", L"x", 1, MULT_MAX, 1, mult_get, mult_set);
     A->add_slider(L"&Fast-forward (game speed)", L"x", 1, SPEED_MAX, 1, speed_get, speed_set);
-    A->add_toggle(L"&Unlock everything (cards, packs, duelists)", VK_F2, unlock_get, unlock_set);
+    A->add_toggle(L"&Unlock everything (cards, packs, duelists, recipes)", VK_F2, unlock_get, unlock_set);
     A->add_slider(L"Save state s&lot", L"", 1, SAVESTATE_SLOTS, 1, state_slot_get, state_slot_set);
     A->add_toggle(L"Save sta&te", VK_F1, state_get, state_save_set);
     A->add_toggle(L"Load state", VK_F12, state_get, state_load_set);
@@ -357,6 +423,12 @@ int cheats_init(const TfModApi *api) {   /* called by plugins_load; non-zero = n
     A->hook(F_QUADRO, hk_quadro);
     A->hook(F_RECOMPENSA, hk_recompensa);
     A->hook(F_NUMERO, hk_numero);
+    A->hook(0x0884a7f0, hk_deck_rules);
+    A->hook(0x0883e43c, hk_card_limit);
+    A->hook(0x0884b8fc, hk_card_limit);
+    A->hook(0x0883deac, hk_owned_copies);
+    A->hook(0x08efd43c, hk_editor_count);
+    A->hook(0x08f0e0ac, hk_editor_digits);
     A->log("Cheats loaded: see the opponent's cards %s (F6), DP multiplier %dx (L + R + Up/Down)", g_ver ? "ON" : "off", g_mult);
     return 0;
 }
