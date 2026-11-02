@@ -25,7 +25,8 @@ def gerar(pacote, saida, cid):
     f = os.path.join(pacote, 'cards', 'large', '%d.png' % cid)
     if not os.path.exists(f):
         print('sem arte', cid); return False
-    im = Image.open(f).convert('RGBA').crop(ART)
+    im = Image.open(f).convert('RGBA'); k = im.width / 512.0   # HD pack atlas = 2x
+    im = im.crop(tuple(int(v * k) for v in ART))
     a = np.asarray(im).astype(np.float32)
     a[..., 3] = a[..., 3] * oval(im.width, im.height)
     out = np.clip(a + 0.5, 0, 255).astype(np.uint8)

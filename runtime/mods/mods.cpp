@@ -70,7 +70,7 @@ static void walk(const std::wstring &base, const std::wstring &rel, std::vector<
  * os pacotes de textura (Enhanced/TexturasPC) entram no inicio: qualquer mod do usuario vence o pacote. */
 static bool is_pack_folder(const std::string &f) { return f == "EnhancedTextures" || f == "TexturasPC"; }
 /* fora da lista do lancador: pacotes de textura (Graphics > Textures) e mods sem uso no dia a dia */
-static bool is_launcher_hidden(const std::string &f) { return is_pack_folder(f) || f == "CPUvsCPU" || f == "MonstersOnField"; }
+static bool is_launcher_hidden(const std::string &f) { return is_pack_folder(f) || f == "CPUvsCPU"; }
 /* mods/Cheats is what Cheats used to be (a mod): it is a built-in feature now (cheats.cpp), so an old folder is ignored (never listed nor loaded) */
 static bool is_retired_folder(const std::string &f) { return _stricmp(f.c_str(), "Cheats") == 0; }
 static std::vector<std::string> read_order_file(const std::wstring &root) {

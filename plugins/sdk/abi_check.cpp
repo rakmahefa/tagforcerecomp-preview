@@ -27,5 +27,7 @@ static_assert(offsetof(TfModApi, use_menu) == 136, "v4");
 static_assert(offsetof(TfModApi, sprite) == 144, "v5");
 static_assert(offsetof(TfModApi, quad_near) == 152, "v5");
 static_assert(offsetof(TfModApi, set_speed) == 160, "v6");
-static_assert(sizeof(TfModApi) == 168, "TfModApi grew: append the new field's assert above");
+static_assert(offsetof(TfModApi, set_bgm) == 168, "v7");
+static_assert(offsetof(TfModApi, occluders) == 176, "v8");
+static_assert(sizeof(TfModApi) == 184, "TfModApi grew: append the new field's assert above");
 static_assert(TFMOD_API_VERSION >= 6, "the API version never goes down");

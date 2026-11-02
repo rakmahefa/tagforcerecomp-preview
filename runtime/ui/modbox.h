@@ -8,5 +8,7 @@ const uint32_t *modbox_pixels(uint64_t frame);   /* overlay GPU_OVW x GPU_OVH pr
 uint64_t modbox_version(void);   /* muda quando a imagem e refeita (o display so reenvia o overlay entao) */
 void modbox_sprite(uint64_t frame, int id, const uint32_t *rgba, int w, int h, float x, float y, float dw, float dh, int alpha);   /* API 5: imagem RGBA por cima do jogo (pixels do PSP 480x272); chamar a cada quadro */
 void modbox_quad(uint32_t fb, float x0, float y0, float x1, float y1);   /* hle_ge: quad 3D texturizado desenhado em fb */
-void modbox_quad_frame(uint32_t fb);                                     /* sceDisplaySetFrameBuf: fb vira o quadro exibido */
+void modbox_occ(uint32_t fb, float x0, float y0, float x1, float y1);                  /* hle_ge: 2D piece drawn in fb (covers mod sprites) */
+int modbox_occluders(float x0, float y0, float x1, float y1, float *out, int max);     /* 2D pieces drawn after the field-row cards that overlap the box */
+void modbox_quad_frame(uint32_t fb);                                    /* sceDisplaySetFrameBuf: fb vira o quadro exibido */
 int modbox_quad_near(int x, int y, int tol, int wmin, int wmax);          /* ha um quad de largura wmin..wmax centrado a ate tol pixels de (x,y) no quadro exibido? */

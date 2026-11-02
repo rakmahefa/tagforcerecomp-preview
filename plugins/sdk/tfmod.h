@@ -32,7 +32,7 @@
 extern "C" {
 #endif
 
-#define TFMOD_API_VERSION 7   /* 2: guest_alloc; 3: add_slider; 4: add_toggle, panel, use_menu; 5: sprite, quad_near; 6: set_speed; 7: set_bgm */
+#define TFMOD_API_VERSION 8   /* 2: guest_alloc; 3: add_slider; 4: add_toggle, panel, use_menu; 5: sprite, quad_near; 6: set_speed; 7: set_bgm; 8: occluders */
 
 typedef struct CPU TfCpu;                     /* PSP registers (opaque: use reg/set_reg) */
 /* hook: called on ENTRY of the game function. Return 0 to let the original body run next (the hook only observed/prepared), or
@@ -129,6 +129,12 @@ typedef struct TfModApi {
     /* Replaces the music the game starts next (the first looping ATRAC3plus track it opens (longer than 10 s)) with a WAV file: PCM 16-bit stereo 44100 Hz,
      * played in a loop. Pass NULL to go back to the game's own music. Music already playing is not changed: call it before the game loads the track. */
     void (*set_bgm)(const wchar_t *wav_path);
+
+    /* ---- version 8 ---- */
+    /* 2D pieces (HUD bars, dialogs, menus, hand...) the game drew AFTER the last field card in the frame on screen, that overlap the box
+     * (x0, y0, x1, y1) in PSP pixels. Writes up to `max` rectangles as x0,y0,x1,y1 floats into `out` (4 floats each; may be NULL) and returns
+     * how many there are in total. Lets a mod sprite (which is drawn above the whole game picture) step aside for what should cover it. */
+    int (*occluders)(float x0, float y0, float x1, float y1, float *out, int max);
 } TfModApi;
 #define TFMOD_MENU_MODS 0
 /* In tfmod_init: stop (and log why) if the runtime is older than the API version this mod needs. */

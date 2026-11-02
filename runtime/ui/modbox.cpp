@@ -413,10 +413,27 @@ static void desenhar(Cena c) {
 /* quadros 3D texturizados (4 vertices) desenhados no buffer exibido: o plugin pergunta se a carta de uma casa do campo esta na tela (API 5, quad_near) */
 struct Quad { float cx, cy, w, h; };
 static std::map<uint32_t, std::vector<Quad>> g_qcur; static std::vector<Quad> g_qsnap;
+/* 2D pieces drawn AFTER the last field-row card of the frame (phase bar, dialogs, hand...): what covers a mod sprite (API 8, occluders). A card quad
+ * in the monster/spell rows (y 140..175, 14..44 wide) restarts the list, so only what came after it counts. */
+struct Occ { float x0, y0, x1, y1; };
+static std::map<uint32_t, std::vector<Occ>> g_ocur; static std::vector<Occ> g_osnap;
 void modbox_quad(uint32_t fb, float x0, float y0, float x1, float y1) {
     std::vector<Quad> &v = g_qcur[fb & 0x1ffff0u]; if (v.size() < 400) v.push_back({(x0 + x1) / 2, (y0 + y1) / 2, fabsf(x1 - x0), fabsf(y1 - y0)});
+    const float cy = (y0 + y1) / 2, w = fabsf(x1 - x0);
+    if (cy >= 140 && cy <= 175 && w >= 14 && w <= 44) g_ocur[fb & 0x1ffff0u].clear();
 }
-void modbox_quad_frame(uint32_t fb) { std::vector<Quad> &v = g_qcur[fb & 0x1ffff0u]; g_qsnap.swap(v); v.clear(); }
+void modbox_occ(uint32_t fb, float x0, float y0, float x1, float y1) {
+    if (x0 > x1) std::swap(x0, x1);
+    if (y0 > y1) std::swap(y0, y1);
+    if (x1 < 200 || x0 > 430 || y1 < 40 || y0 > 200 || (x1 - x0) > 460 || (y1 - y0) > 260) return;   /* only the area where the field holograms stand */
+    std::vector<Occ> &v = g_ocur[fb & 0x1ffff0u]; if (v.size() < 200) v.push_back({x0, y0, x1, y1});
+}
+void modbox_quad_frame(uint32_t fb) { std::vector<Quad> &v = g_qcur[fb & 0x1ffff0u]; g_qsnap.swap(v); v.clear(); std::vector<Occ> &o = g_ocur[fb & 0x1ffff0u]; g_osnap.swap(o); o.clear(); }
+int modbox_occluders(float x0, float y0, float x1, float y1, float *out, int max) {
+    int n = 0;
+    for (const Occ &o : g_osnap) if (o.x1 > x0 && o.x0 < x1 && o.y1 > y0 && o.y0 < y1) { if (out && n < max) { out[n * 4] = o.x0; out[n * 4 + 1] = o.y0; out[n * 4 + 2] = o.x1; out[n * 4 + 3] = o.y1; } n++; }
+    return n;
+}
 int modbox_quad_near(int x, int y, int tol, int wmin, int wmax) {
     for (const Quad &q : g_qsnap) if (fabsf(q.cx - x) <= tol && fabsf(q.cy - y) <= tol && q.w >= wmin && q.w <= wmax) return 1;
     return 0;

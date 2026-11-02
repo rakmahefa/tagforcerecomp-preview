@@ -101,6 +101,7 @@ static bool plugin_start(Plugin *p, int (*init)(const TfModApi *)) {
     a.sprite = api_sprite; a.quad_near = api_quad_near;   /* versao 5 */
     a.set_speed = display_set_speed;   /* versao 6 */
     a.set_bgm = hle_set_bgm;           /* versao 7 */
+    a.occluders = modbox_occluders;    /* versao 8 */
     g_init = p; const int r = init(&a); g_init = nullptr;
     if (r != 0) {   /* falhou: tira os ganchos e os ajustes que ele tenha posto (as funcoes deles somem com a DLL: o menu chamaria get() de codigo descarregado) */
         hook_remove_owner(p);

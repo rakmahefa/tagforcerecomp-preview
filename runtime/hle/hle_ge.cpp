@@ -1662,6 +1662,12 @@ static void draw_prim(GeList &l, uint32_t data) {
         for (int i = 1; i < 4; i++) { qx0 = std::min(qx0, vv[i].x); qx1 = std::max(qx1, vv[i].x); qy0 = std::min(qy0, vv[i].y); qy1 = std::max(qy1, vv[i].y); }
         modbox_quad(fb_base(), qx0, qy0, qx1, qy1);
     }
+    if (t.through && (type == 6 || type == 4) && count >= 2 && R.psm == 3) {   /* 2D piece: it may cover a mod sprite (modbox_occ, plugin API 8) */
+        extern void modbox_occ(uint32_t, float, float, float, float);
+        float a = vv[0].x, b = vv[0].y, c = a, d = b;
+        for (uint32_t i = 1; i < count; i++) { a = std::min(a, vv[i].x); c = std::max(c, vv[i].x); b = std::min(b, vv[i].y); d = std::max(d, vv[i].y); }
+        modbox_occ(fb_base(), a, b, c, d);
+    }
     if (type == 6 && count >= 2 && !(count & 1) && t.through && textured) {   /* sprites 2D texturizados: o modulo do mouse acha barras de menu (2 vertices) e linhas de texto (varios sprites num PRIM) */
         extern bool display_mouse_menus(void); extern void mui_prim(uint32_t, int, int, int, int, float, float, float, float, uint32_t, uint32_t); extern void mui_run(uint32_t, int, int, int, int);
         if (display_mouse_menus()) {

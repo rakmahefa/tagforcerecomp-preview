@@ -16,6 +16,7 @@
 #include <algorithm>
 
 static const TfModApi *A;
+static const float OPP_X0 = 313.5f, OPP_DX = 44.f, OPP_Y = 110.f, MINI_W = 44.f, MINI_H = 52.f;
 static const uint32_t F_QUADRO = 0x08833fc4, CASAS = 0x09f79d1c, PASSO = 0xfac;
 struct Img { int w = 0, h = 0; std::vector<uint32_t> px; };
 static std::map<uint32_t, Img> g_img;   /* id da carta -> sprite */
@@ -51,18 +52,38 @@ static void carregar_sprites(void) {
     FindClose(h);
 }
 
+/* The overlay sits above the whole game picture, so a sprite cannot go "behind" what the game draws later. API 8 tells which 2D pieces the game drew after
+ * the field cards: if a big one (a window, a card preview) overlaps a good part of the sprite, the sprite is simply not shown that frame. */
+static bool covered(float x0, float y0, float x1, float y1) {
+    if (A->version < 8) return false;
+    float r[32 * 4]; const int n = std::min(32, A->occluders(x0, y0, x1, y1, r, 32));
+    const float area = (x1 - x0) * (y1 - y0);
+    for (int i = 0; i < n; i++) {
+        const float *o = r + i * 4, w = o[2] - o[0], h = o[3] - o[1];
+        if (w < 40 || h < 30) continue;   /* text, cursors, thin bars: ignore */
+        const float ox = std::min(x1, o[2]) - std::max(x0, o[0]), oy = std::min(y1, o[3]) - std::max(y0, o[1]);
+        if (ox > 0 && oy > 0 && ox * oy >= 0.15f * area) return true;
+    }
+    return false;
+}
+
 static int hk_quadro(TfCpu *) {
     if (!g_on || !A->module_loaded("libduel_eng")) return 0;
-    for (int col = 0; col < 5; col++) {
-        const uint32_t casa = CASAS + 0 * PASSO + col * 0x14;
+    for (int pl = 0; pl < 2; pl++) for (int col = 0; col < 5; col++) {
+        const uint32_t casa = CASAS + pl * PASSO + col * 0x14;
         const uint32_t id = *(uint32_t *)A->mem(casa) & 0x1fff, bits = *(uint32_t *)A->mem(casa + 0x10);
         auto it = g_img.find(id);
         if (it == g_img.end() || !(bits & 0x80)) continue;
-        const float cx = 313.5f + 46.f * (col - 2), cy = 157.5f;
-        if (!A->quad_near((int)cx, (int)cy, 10, 14, 44)) continue;   /* a carta nao esta desenhada ali agora (cut-in, resultado...) */
+        /* player: row at y 157.5, 46 px apart; opponent: farther row (perspective), mirrored, a bit tighter (measured in a duel) */
+        const float cx = pl ? OPP_X0 - OPP_DX * (col - 2) : 313.5f + 46.f * (col - 2), cy = pl ? OPP_Y : 157.5f;
+        if (!A->quad_near((int)cx, (int)cy, 10, 12, 44)) continue;   /* a carta nao esta desenhada ali agora (cut-in, resultado...) */
         const bool defesa = (bits & 0x08) != 0;
-        const float k = g_escala / 100.f * (defesa ? 0.8f : 1.f), dw = 64.f * k, dh = dw * it->second.h / it->second.w;
-        A->sprite(100 + col, it->second.px.data(), it->second.w, it->second.h, cx - dw / 2, cy + 10.f - dh, dw, dh, defesa ? 200 : 255);
+        /* miniature: fits a small box (wider monsters are limited by width, taller ones by height) */
+        const Img &im = it->second; const float k = g_escala / 100.f * (defesa ? 0.8f : 1.f) * (pl ? 0.85f : 1.f);
+        const float asp = (float)im.h / im.w, dw = std::min(MINI_W, MINI_H / asp) * k, dh = dw * asp;
+        const uint8_t alfa = defesa ? 200 : 255; const float x = cx - dw / 2, y = cy + 8.f - dh;
+        if (covered(x, y, x + dw, y + dh)) continue;   /* a game window (phase select, card preview, menu...) is on top of the field: stand aside */
+        A->sprite(100 + pl * 5 + col, im.px.data(), im.w, im.h, x, y, dw, dh, alfa);
     }
     return 0;
 }
