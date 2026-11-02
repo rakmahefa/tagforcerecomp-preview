@@ -4,7 +4,15 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
 
 ## [Unreleased]
 
+## [0.6.0] - 2026-11-02
+
 ### Added
+- **Controls page** in the launcher: every action has a keyboard field and a controller field, assigned by pressing the key or button (LT/RT included). Generic DirectInput controllers are supported too, with numbered buttons you can remap. Run follows Cancel / Circle. Escape cancels a capture, Delete clears a slot, "Restore defaults" resets the layout. Changes apply after restarting the game.
+- Cheats: **Remove banlist** (three copies of any card) and **Unlimited card copies** (owned cards can fill the deck in the editor; the save collection is unchanged).
+- Cheats: "Unlock everything" also unlocks the Recipe Viewer entries and story parts 1-3.
+- Plugin API 8: a mod can ask which 2D pieces the game drew over a box, so its sprites can hide under game windows.
+- **Monsters on the field** shows the opponent's monsters too, fits each one in a small box and steps aside when a large game window covers it. It is listed in the launcher again (still experimental).
+- **TF3 Cards** (experimental): many more card effects (Slifer the Sky Dragon, Twister, Graveyard and hand effects, equipment and continuous Spells, destroy-all effects, battle-destruction triggers, draw and life point effects and more). Some cards are plain data without a duel-tested effect.
 - The launcher checks GitHub once at startup for a newer release and shows an "Update available" button on the bottom bar. It opens the release notes (the GitHub release text) with "Update now" (opens the download page) and "Later". The About page shows the current version. Turn it off with `verificar_atualizacao=0` under `[geral]` in `tagforce_recomp.ini`.
 
 ## [0.5.2] - 2026-10-28
