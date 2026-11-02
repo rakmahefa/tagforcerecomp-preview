@@ -59,9 +59,13 @@ def para_tf1(w0, w1):
     TF3 w0: id 0-12, ATK/10 at 14-22, DEF/10 at 23-31 (TF1 uses 13 and 22; TF1 bit 31 = 1). TF3 w1: category at 1-4, attribute at 6-9,
     level at 10-13, icon at 14-16, type at 17-21 (23/24 = Spell/Trap become 22/23); rarity stays 0 (TF3 encodes it differently)."""
     tipo = (w1 >> 17) & 31
-    tipo = {23: 22, 24: 23}.get(tipo, tipo)
+    cat = (w1 >> 1) & 15
+    if tipo == 22 and cat == 11:   # Divine-Beast (the Egyptian Gods): TF3 type 22 / category 11 = TF1 type 21 (named "Divine-Beast", unused) / Effect;
+        tipo, cat = 21, 1          # left as 22 the card is a Spell for the TF1 engine (only "Set on Spell & Trap Card Zone" in the hand)
+    else:                          # TF3 type 21 = Psychic stays 21: TF1 has no Psychic type, those cards show "Divine-Beast"
+        tipo = {23: 22, 24: 23}.get(tipo, tipo)
     n0 = (w0 & 0x1FFF) | (((w0 >> 14) & 0x1FF) << 13) | (((w0 >> 23) & 0x1FF) << 22) | 0x80000000
-    n1 = ((w1 >> 1) & 15) | (((w1 >> 6) & 15) << 4) | (((w1 >> 10) & 15) << 8) | (((w1 >> 14) & 7) << 12) | (tipo << 15)
+    n1 = cat | (((w1 >> 6) & 15) << 4) | (((w1 >> 10) & 15) << 8) | (((w1 >> 14) & 7) << 12) | (tipo << 15)
     return n0, n1
 
 

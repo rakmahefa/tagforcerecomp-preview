@@ -4,6 +4,9 @@ Three isolated duels through tf3_lote.py; Slifer is poked into a field zone (it 
   summon   an opponent monster with 2000 DEF or less appears while Slifer is face-up -> it is destroyed (Graveyard of the summoner)
   special  Slifer appears during the action of another card (= Special Summoned) -> it goes to the Graveyard when the turn ends
   target   Change of Heart tests Slifer and a plain monster as targets -> Slifer is refused, the other one is accepted
+  tribute3 Slifer in hand, 3 monsters poked into your zones: Summon asks for 3 Tributes and all 3 go to the Graveyard
+  set3     the same with Set
+  tribute2 only 2 monsters: the hand menu offers no Summon / Set (the first X opens Show Details), nothing moves
 Run (no -I): TF_TEST_EXE=<package exe> TF_TEST_DATA=<game data> python tools/test/tf3_verify_slifer_fx.py [summon|special|target]
 """
 import glob
@@ -22,6 +25,8 @@ def zone(addr, card):   # poke words that put a face-up monster into a field zon
 
 
 SIDE0, SIDE1 = 0x09f79d1c, 0x09f7acc8   # first monster zone of each side
+T1 = 'w300 estado:ini ' + ' '.join(zone(SIDE0 + 20 * k, 4054) for k in range(3)) + ' w30 DOWN w40 DOWN w40 LEFT w30 LEFT w30 LEFT w30 LEFT w30 LEFT w30 X w100 '   # turn 1, Slifer = hand slot 0
+PICKS = 'X w300 X w300 RIGHT w30 X w300 X w300 w100 X w300 w600 estado:fim'   # Summon / Set, YES, three picks (the cursor returns to the first candidate after each)
 HAND = 'w60 DOWN w40 DOWN w40 LEFT w30 LEFT w30 LEFT w30 LEFT w30 LEFT w30 X w100 '
 CASES = {
     'summon': dict(card=4012, env={'TF3_DEBUG_SLIFER': '1'},
@@ -33,6 +38,9 @@ CASES = {
     'target': dict(card=4860, env={'TF3_DEBUG_TARGET': '1'},
                    rot='w300 estado:ini ' + zone(SIDE1, SLIFER) + ' ' + zone(SIDE1 + 20, 4012) + ' ' + HAND + 'X w300 w300 estado:fim',
                    log=['slot 0 card %d -> refused (Slifer)' % SLIFER, 'slot 1 card 4012\n']),
+    'tribute3': dict(card=4999, env={'TF3_DEBUG_SLIFER': '1'}, rot=T1 + PICKS, log=['slifer: third Tribute'], grave_n=3),
+    'set3': dict(card=4999, env={'TF3_DEBUG_SLIFER': '1'}, rot=T1 + 'DOWN w30 ' + PICKS, log=['slifer: third Tribute'], grave_n=3),
+    'tribute2': dict(card=4999, env={}, rot=T1.replace(' ' + zone(SIDE0 + 40, 4054), '') + 'X w300 X w300 w300 estado:fim', log=[], grave_n=0, hand_same=True),
 }
 
 
@@ -46,6 +54,10 @@ def run(name, case):
     state = json.load(open(os.path.join(ROOT, 'gen', 'lote', str(case['card']), 'state.json'), encoding='utf-8'))
     if case.get('grave_me'):
         ok = ok and len(state['fim']['me']['grave']) > len(state['ini']['me']['grave'])
+    if 'grave_n' in case:
+        ok = ok and len(state['fim']['me']['grave']) - len(state['ini']['me']['grave']) == case['grave_n']
+    if case.get('hand_same'):
+        ok = ok and state['fim']['me']['n_hand'] == state['ini']['me']['n_hand']
     if case.get('grave_has'):
         ok = ok and case['grave_has'] in state['fim']['me']['grave']
     print('PASS' if ok else 'FAIL', name, flush=True)

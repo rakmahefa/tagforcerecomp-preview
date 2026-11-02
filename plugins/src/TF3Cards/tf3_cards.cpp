@@ -1789,16 +1789,18 @@ static void slifer_after_action(TfCpu *c, const uint32_t *rec) {
     uint32_t cur[2][5];
     for (uint32_t s = 0; s < 2; s++) for (uint32_t k = 0; k < 5; k++) cur[s][k] = zone_card(s, k);
     static const bool dbg = getenv("TF3_DEBUG_SLIFER") != nullptr;
+    if (g_sl_third_ref >= 0 && ((rec[0] >> 8) & 0x1fff) == sl) {   /* Slifer's own Summon / Set just ended: send the third Tribute to the Graveyard */
+        const uint32_t ts = g_sl_third_ref & 0xff, tk = (uint32_t)g_sl_third_ref >> 8;
+        g_sl_third_ref = -1;
+        if (dbg) A->log("slifer: third Tribute side %u slot %u", ts, tk);
+        if (ts < 2 && tk < 5 && zone_card_any(ts, tk)) call_game6(c, 0x09f34d64, ts, tk, 14, 2, sl, 0);
+        for (uint32_t k = 0; k < 5; k++) cur[ts & 1][k] = zone_card(ts & 1, k);
+    }
     for (uint32_t s = 0; s < 2; s++) for (uint32_t k = 0; k < 5; k++) {
         if (cur[s][k] != sl) { g_sl_special[s][k] = false; continue; }
         if (g_sl_prev[s][k]) continue;
         g_sl_special[s][k] = ((rec[0] >> 8) & 0x1fff) != sl;   /* a Normal Summon / Flip Summon is the action of Slifer itself */
         if (dbg) A->log("slifer: appeared at side %u slot %u during the action of card %u -> %s", s, k, (rec[0] >> 8) & 0x1fff, g_sl_special[s][k] ? "Special Summon" : "Normal / Flip Summon");
-        if (!g_sl_special[s][k] && g_sl_third_ref >= 0) {   /* the third Tribute */
-            const uint32_t ts = g_sl_third_ref & 0xff, tk = (uint32_t)g_sl_third_ref >> 8;
-            g_sl_third_ref = -1;
-            if (ts < 2 && tk < 5 && zone_card_any(ts, tk)) call_game6(c, 0x09f34d64, ts, tk, 14, 2, sl, 0);
-        }
     }
     for (uint32_t side = 0; side < 2; side++) {
         const uint32_t owner = 1 - side;
@@ -1839,22 +1841,40 @@ static int hk_summon_exec(TfCpu *c) {
     const uint16_t sl = slot_of(4999);
     uint8_t *step = A->mem(SUMMON_STEP), *count = A->mem(SUMMON_COUNT);
     const uint32_t card = (*(const uint32_t *)A->mem(SUMMON_REC) >> 8) & 0x1fff;
-    if (!sl || card != sl || (*step != 21 && *step != 22)) return 0;
+    if (getenv("TF3_DEBUG_SLIFER_ALL") && card == sl) A->log("summon exec: card %u step %u count %u picks %08x", card, *step, *count, *(const uint32_t *)A->mem(SUMMON_PICKS));
+    if (!sl || card != sl || getenv("TF3_SLIFER_NO3")) return 0;
+    if (*step == 20) { g_sl_third_asked = false; g_sl_third_ref = -1; }   /* a new summon (also after a cancelled one) */
+    if (*step != 21 && *step != 22) return 0;
     const uint8_t before = *step;
-    if (*step == 21 && !g_sl_third_asked) g_sl_third_ref = -1;
     A->call_original(c, 0x09e91fe8);
     static const bool dbg = getenv("TF3_DEBUG_SLIFER") != nullptr;
-    if (dbg) A->log("slifer summon: step %u -> %u, picks %u, third asked %d", before, *step, *count, g_sl_third_asked);
+    if (dbg) A->log("slifer summon: step %u -> %u, picks %u, third asked %d, v0 %x", before, *step, *count, g_sl_third_asked, A->reg(c, 2));
     if (before != 22) return 1;
-    if (!g_sl_third_asked && *count >= 2 && *step != 21 && *step != 22) {   /* two picked, the engine is leaving for the summon: ask for the third */
+    /* the step stays 22 and v0 = 1 when the picks are complete (v0 = 0 while the executor keeps running) */
+    if (!g_sl_third_asked && *count == 2 && A->reg(c, 2) == 1) {   /* two picked: ask for the third */
         g_sl_third_asked = true;
         *step = 21;
-    } else if (g_sl_third_asked && *count >= 3) {   /* the third pick landed after the array */
+        A->set_reg(c, 2, 0);
+    } else if (g_sl_third_asked && *count >= 3) {   /* the third pick landed after the array: keep it here and finish with two, as the engine expects */
         g_sl_third_ref = *(const uint16_t *)A->mem(SUMMON_PICKS + 4);
         *(uint16_t *)A->mem(SUMMON_PICKS + 4) = 0;
         *count = 2;
+        *step = 22;
         g_sl_third_asked = false;
+        A->set_reg(c, 2, 1);
     }
+    return 1;
+}
+
+/* 09e8edf4(side, card ref, ...) gives the Summon / Set command mask of a hand card (0x50 when a Tribute Summon is possible); the card id of the ref is the u16 at
+ * 09f79cec + 8044 + ref * 4 (as 09f55818 reads it). The engine only knows 1 or 2 Tributes, so Slifer gets no command while its side has fewer than 3 monsters. */
+static int hk_summon_mask(TfCpu *c) {
+    const uint32_t side = A->reg(c, 4) & 1, ref = A->reg(c, 5);
+    if (ref >= 200 || (*(const uint16_t *)A->mem(DUEL_SIDES + 8044 + ref * 4) & 0x1fff) != slot_of(4999)) return 0;
+    uint32_t n = 0;
+    for (uint32_t k = 0; k < 5; k++) n += zone_card_any(side, k);
+    if (n >= 3) return 0;
+    A->set_reg(c, 2, 0);
     return 1;
 }
 
@@ -2103,7 +2123,7 @@ extern "C" __declspec(dllexport) int tfmod_init(const TfModApi *api) {
     }
     if (getenv("TF3_DEBUG_CAND")) { A->hook(F_CAND_RUN, hk_cand_run_debug); A->hook(F_CAND_COUNT, hk_cand_count_debug); }
     else if (!g_fx.empty()) { A->hook(F_CAND_RUN, hk_cand_run); A->hook(F_CAND_COUNT, hk_cand_count); A->hook(F_MOVE_PICKED, hk_move_to_hand); }
-    if (slot_of(4999)) { A->hook(0x09f538ac, hk_target_legal); A->hook(0x09e91fe8, hk_summon_exec); if (getenv("TF3_SLIFER_LEVEL")) A->hook(0x0884b77c, hk_exp_level); }
+    if (slot_of(4999)) { A->hook(0x09f538ac, hk_target_legal); A->hook(0x09e91fe8, hk_summon_exec); A->hook(0x09e8edf4, hk_summon_mask); if (getenv("TF3_SLIFER_LEVEL")) A->hook(0x0884b77c, hk_exp_level); }
     if (!g_amt.empty()) A->hook(F_DRAW, hk_draw);
     A->hook(F_LP_AMOUNTS, hk_lp_amounts);
     A->hook(F_EFFECT_DRIVER, hk_effect_driver);
