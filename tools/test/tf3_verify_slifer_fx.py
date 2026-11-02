@@ -7,7 +7,9 @@ Three isolated duels through tf3_lote.py; Slifer is poked into a field zone (it 
   tribute3 Slifer in hand, 3 monsters poked into your zones: Summon asks for 3 Tributes and all 3 go to the Graveyard
   set3     the same with Set
   tribute2 only 2 monsters: the hand menu offers no Summon / Set (the first X opens Show Details), nothing moves
-Run (no -I): TF_TEST_EXE=<package exe> TF_TEST_DATA=<game data> python tools/test/tf3_verify_slifer_fx.py [summon|special|target]
+  obelisk3 Obelisk the Tormentor: 3 Tributes as tribute3
+  ra3      The Winged Dragon of Ra: 3 Tributes (Sangan 1000 / 600 each) -> ATK 3000 DEF 1800
+Run (no -I): TF_TEST_EXE=<package exe> TF_TEST_DATA=<game data> python tools/test/tf3_verify_slifer_fx.py [case ...]
 """
 import glob
 import json
@@ -34,13 +36,15 @@ CASES = {
                    log=['appeared, DEF 1400 -> destroy'], grave_me=True),
     'special': dict(card=4012, env={'TF3_DEBUG_SLIFER': '1'},
                     rot='w300 estado:ini ' + zone(SIDE0, SLIFER) + ' ' + HAND + 'X w600 O w60 RIGHT w20 RIGHT w20 RIGHT w20 X w3000 estado:fim',
-                    log=['-> Special Summon', 'End Phase, sending the Special Summoned Slifer'], grave_has=SLIFER),
+                    log=['-> Special Summon', 'End Phase, sending the Special Summoned card'], grave_has=SLIFER),
     'target': dict(card=4860, env={'TF3_DEBUG_TARGET': '1'},
                    rot='w300 estado:ini ' + zone(SIDE1, SLIFER) + ' ' + zone(SIDE1 + 20, 4012) + ' ' + HAND + 'X w300 w300 estado:fim',
-                   log=['slot 0 card %d -> refused (Slifer)' % SLIFER, 'slot 1 card 4012\n']),
-    'tribute3': dict(card=4999, env={'TF3_DEBUG_SLIFER': '1'}, rot=T1 + PICKS, log=['slifer: third Tribute'], grave_n=3),
-    'set3': dict(card=4999, env={'TF3_DEBUG_SLIFER': '1'}, rot=T1 + 'DOWN w30 ' + PICKS, log=['slifer: third Tribute'], grave_n=3),
+                   log=['slot 0 card %d -> refused (God)' % SLIFER, 'slot 1 card 4012\n']),
+    'tribute3': dict(card=4999, env={'TF3_DEBUG_SLIFER': '1'}, rot=T1 + PICKS, log=['god: third Tribute'], grave_n=3),
+    'set3': dict(card=4999, env={'TF3_DEBUG_SLIFER': '1'}, rot=T1 + 'DOWN w30 ' + PICKS, log=['god: third Tribute'], grave_n=3),
     'tribute2': dict(card=4999, env={}, rot=T1.replace(' ' + zone(SIDE0 + 40, 4054), '') + 'X w300 X w300 w300 estado:fim', log=[], grave_n=0, hand_same=True),
+    'obelisk3': dict(card=4998, env={'TF3_DEBUG_SLIFER': '1'}, rot=T1 + PICKS, log=['god: third Tribute'], grave_n=3),
+    'ra3': dict(card=5000, env={'TF3_DEBUG_SLIFER': '1'}, rot=T1 + PICKS, log=['god: third Tribute', 'gets ATK 3000 DEF 1800'], grave_n=3),
 }
 
 

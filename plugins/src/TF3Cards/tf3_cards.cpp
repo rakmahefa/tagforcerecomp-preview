@@ -1451,6 +1451,8 @@ static int32_t stat_cond_count(const StatRule &r, uint32_t ss, int excl_slot) {
     return n;
 }
 
+static int32_t g_ra_stat[2][5][2];   /* Ra: ATK / DEF taken from its 3 Tributes, per zone (see hk_summon_exec) */
+static bool g_ra_has[2][5];
 static int hk_stats(TfCpu *c) {
     const uint32_t side = A->reg(c, 4) & 1, slot = A->reg(c, 5), out = A->reg(c, 6);
     static const bool dbg = getenv("TF3_DEBUG_STATS") != nullptr;
@@ -1465,6 +1467,7 @@ static int hk_stats(TfCpu *c) {
         if (spell_immunity < 0) spell_immunity = (int)call_game(c, 0x09f53430, side, slot, 0, 0);
         return (spell_immunity & (source_side == side ? 1 : 2)) == 0;
     };
+    if (me == slot_of(5000) && g_ra_has[side][slot]) { *atk = g_ra_stat[side][slot][0]; *def = g_ra_stat[side][slot][1]; }
     if (dbg) {
         static std::set<uint32_t> seen_cards;
         if (seen_cards.insert(me).second) A->log("stat query: target %u side %u slot %u base ATK %d DEF %d", me, side, slot, *atk, *def);
@@ -1585,15 +1588,23 @@ static int cand_debug(TfCpu *c, uint32_t fn, const char *what) {
 }
 static int hk_cand_run_debug(TfCpu *c) { return cand_debug(c, F_CAND_RUN, "run"); }
 
-/* Slifer the Sky Dragon cannot be targeted. 09f538ac(effect object, side, slot) is the game's "may this effect target the monster of that zone" test shared by
+/* The Egyptian Gods of Tag Force 3 (Obelisk 4998, Slifer 4999, Ra 5000) share three rules: 3 Tributes, sent to the Graveyard in the End Phase when Special
+ * Summoned, cannot be targeted. */
+static bool is_god(uint32_t id) {
+    if (!id) return false;
+    for (uint32_t g : {4998u, 4999u, 5000u}) if (slot_of(g) && id == slot_of(g)) return true;
+    return false;
+}
+static bool any_god() { return slot_of(4998) || slot_of(4999) || slot_of(5000); }
+
+/* The Gods cannot be targeted. 09f538ac(effect object, side, slot) is the game's "may this effect target the monster of that zone" test shared by
  * the target filters of the Spells / Traps / monster effects; it already refuses the face-up cards 4998 / 4999 / 5000 of the base game, so a face-up Slifer is
  * refused the same way. */
 static int hk_target_legal(TfCpu *c) {
     const uint32_t side = A->reg(c, 5), slot = A->reg(c, 6);
-    const uint16_t sl = slot_of(4999);
     static const bool dbg = getenv("TF3_DEBUG_TARGET") != nullptr;
-    const bool hide = sl && side < 2 && slot < 5 && zone_card(side, slot) == sl;
-    if (dbg) { static int n; if (n++ < 400) A->log("target test: object %08x side %u slot %u card %u%s", A->reg(c, 4), side, slot, zone_card(side, slot < 5 ? slot : 0), hide ? " -> refused (Slifer)" : ""); }
+    const bool hide = side < 2 && slot < 5 && is_god(zone_card(side, slot));
+    if (dbg) { static int n; if (n++ < 400) A->log("target test: object %08x side %u slot %u card %u%s", A->reg(c, 4), side, slot, zone_card(side, slot < 5 ? slot : 0), hide ? " -> refused (God)" : ""); }
     if (!hide) return 0;
     A->set_reg(c, 2, 0);
     return 1;
@@ -1781,31 +1792,40 @@ static int32_t g_sl_third_ref = -1;   /* side | slot << 8 of the third Tribute (
 static bool zone_card_any(uint32_t side, uint32_t slot) { return (*(const uint16_t *)A->mem(DUEL_SIDES + side * DUEL_SIDE_SIZE + 0x30 + 20 * slot) & 0x1fff) != 0; }
 static uint32_t g_sl_prev[2][5], g_sl_buf;
 static bool g_sl_busy;
-static bool g_sl_special[2][5];   /* a face-up Slifer that was Special Summoned (it appeared during an action of another card) */
+static bool g_sl_special[2][5];   /* a face-up God that was Special Summoned (it appeared during an action of another card) */
+static int32_t g_ra_pending[2][2] = {{-1, 0}, {-1, 0}};   /* Ra: summed ATK / DEF of its 3 Tributes, per side, until Ra lands (ATK -1 = none) */
 static void slifer_after_action(TfCpu *c, const uint32_t *rec) {
     const uint16_t sl = slot_of(4999);
-    if (!sl || g_sl_busy) return;
+    if (!any_god() || g_sl_busy) return;
+    const uint32_t actor = (rec[0] >> 8) & 0x1fff;
     g_sl_busy = true;
     uint32_t cur[2][5];
     for (uint32_t s = 0; s < 2; s++) for (uint32_t k = 0; k < 5; k++) cur[s][k] = zone_card(s, k);
     static const bool dbg = getenv("TF3_DEBUG_SLIFER") != nullptr;
-    if (g_sl_third_ref >= 0 && ((rec[0] >> 8) & 0x1fff) == sl) {   /* Slifer's own Summon / Set just ended: send the third Tribute to the Graveyard */
+    if (g_sl_third_ref >= 0 && is_god(actor)) {   /* the God's own Summon / Set just ended: send the third Tribute to the Graveyard */
         const uint32_t ts = g_sl_third_ref & 0xff, tk = (uint32_t)g_sl_third_ref >> 8;
         g_sl_third_ref = -1;
-        if (dbg) A->log("slifer: third Tribute side %u slot %u", ts, tk);
-        if (ts < 2 && tk < 5 && zone_card_any(ts, tk)) call_game6(c, 0x09f34d64, ts, tk, 14, 2, sl, 0);
+        if (dbg) A->log("god: third Tribute side %u slot %u", ts, tk);
+        if (ts < 2 && tk < 5 && zone_card_any(ts, tk)) call_game6(c, 0x09f34d64, ts, tk, 14, 2, actor, 0);
         for (uint32_t k = 0; k < 5; k++) cur[ts & 1][k] = zone_card(ts & 1, k);
     }
     for (uint32_t s = 0; s < 2; s++) for (uint32_t k = 0; k < 5; k++) {
-        if (cur[s][k] != sl) { g_sl_special[s][k] = false; continue; }
+        const uint32_t here = *(const uint16_t *)A->mem(DUEL_SIDES + s * DUEL_SIDE_SIZE + 0x30 + 20 * k) & 0x1fff;   /* face-up or Set */
+        if (here != slot_of(5000)) g_ra_has[s][k] = false;
+        else if (here == actor && g_ra_pending[s][0] >= 0) {   /* Ra landed by its own Tribute Summon / Set */
+            g_ra_stat[s][k][0] = g_ra_pending[s][0]; g_ra_stat[s][k][1] = g_ra_pending[s][1]; g_ra_has[s][k] = true;
+            g_ra_pending[s][0] = -1;
+            if (dbg) A->log("god: Ra at side %u slot %u gets ATK %d DEF %d from its Tributes", s, k, g_ra_stat[s][k][0], g_ra_stat[s][k][1]);
+        }
+        if (!is_god(cur[s][k])) { g_sl_special[s][k] = false; continue; }
         if (g_sl_prev[s][k]) continue;
-        g_sl_special[s][k] = ((rec[0] >> 8) & 0x1fff) != sl;   /* a Normal Summon / Flip Summon is the action of Slifer itself */
-        if (dbg) A->log("slifer: appeared at side %u slot %u during the action of card %u -> %s", s, k, (rec[0] >> 8) & 0x1fff, g_sl_special[s][k] ? "Special Summon" : "Normal / Flip Summon");
+        g_sl_special[s][k] = actor != cur[s][k];   /* a Normal Summon / Flip Summon is the action of the God itself */
+        if (dbg) A->log("god: card %u appeared at side %u slot %u during the action of card %u -> %s", cur[s][k], s, k, actor, g_sl_special[s][k] ? "Special Summon" : "Normal / Flip Summon");
     }
     for (uint32_t side = 0; side < 2; side++) {
         const uint32_t owner = 1 - side;
         bool guard = false;
-        for (uint32_t k = 0; k < 5; k++) if (cur[owner][k] == sl && zone_effect_active(owner, k)) guard = true;
+        for (uint32_t k = 0; k < 5; k++) if (sl && cur[owner][k] == sl && zone_effect_active(owner, k)) guard = true;
         if (!guard) continue;
         for (uint32_t k = 0; k < 5; k++) {
             if (!cur[side][k] || g_sl_prev[side][k]) continue;
@@ -1838,17 +1858,16 @@ static int hk_exp_level(TfCpu *c) {   /* experiment: TF3_SLIFER_LEVEL=n reports 
 static const uint32_t SUMMON_REC = 0x09f788a4, SUMMON_STEP = 0x09f788bc, SUMMON_COUNT = 0x09f788ac, SUMMON_PICKS = 0x09f788b4;
 static bool g_sl_third_asked;
 static int hk_summon_exec(TfCpu *c) {
-    const uint16_t sl = slot_of(4999);
     uint8_t *step = A->mem(SUMMON_STEP), *count = A->mem(SUMMON_COUNT);
-    const uint32_t card = (*(const uint32_t *)A->mem(SUMMON_REC) >> 8) & 0x1fff;
-    if (getenv("TF3_DEBUG_SLIFER_ALL") && card == sl) A->log("summon exec: card %u step %u count %u picks %08x", card, *step, *count, *(const uint32_t *)A->mem(SUMMON_PICKS));
-    if (!sl || card != sl || getenv("TF3_SLIFER_NO3")) return 0;
-    if (*step == 20) { g_sl_third_asked = false; g_sl_third_ref = -1; }   /* a new summon (also after a cancelled one) */
+    const uint32_t rec = *(const uint32_t *)A->mem(SUMMON_REC), card = (rec >> 8) & 0x1fff, side = rec & 1;
+    if (getenv("TF3_DEBUG_SLIFER_ALL") && is_god(card)) A->log("summon exec: card %u step %u count %u picks %08x", card, *step, *count, *(const uint32_t *)A->mem(SUMMON_PICKS));
+    if (!is_god(card) || getenv("TF3_SLIFER_NO3")) return 0;
+    if (*step == 20) { g_sl_third_asked = false; g_sl_third_ref = -1; g_ra_pending[side][0] = -1; }   /* a new summon (also after a cancelled one) */
     if (*step != 21 && *step != 22) return 0;
     const uint8_t before = *step;
     A->call_original(c, 0x09e91fe8);
     static const bool dbg = getenv("TF3_DEBUG_SLIFER") != nullptr;
-    if (dbg) A->log("slifer summon: step %u -> %u, picks %u, third asked %d, v0 %x", before, *step, *count, g_sl_third_asked, A->reg(c, 2));
+    if (dbg) A->log("god summon: step %u -> %u, picks %u, third asked %d, v0 %x", before, *step, *count, g_sl_third_asked, A->reg(c, 2));
     if (before != 22) return 1;
     /* the step stays 22 and v0 = 1 when the picks are complete (v0 = 0 while the executor keeps running) */
     if (!g_sl_third_asked && *count == 2 && A->reg(c, 2) == 1) {   /* two picked: ask for the third */
@@ -1857,6 +1876,19 @@ static int hk_summon_exec(TfCpu *c) {
         A->set_reg(c, 2, 0);
     } else if (g_sl_third_asked && *count >= 3) {   /* the third pick landed after the array: keep it here and finish with two, as the engine expects */
         g_sl_third_ref = *(const uint16_t *)A->mem(SUMMON_PICKS + 4);
+        if (card == slot_of(5000)) {   /* Ra: "ATK and DEF become the sum of the Tributes", read while the three are still on the field */
+            if (!g_sl_buf) g_sl_buf = A->guest_alloc(256);
+            int32_t sa = 0, sd = 0;
+            for (uint32_t i = 0; i < 3 && g_sl_buf; i++) {
+                const uint16_t r = *(const uint16_t *)A->mem(SUMMON_PICKS + 2 * i);
+                const uint32_t ts = r & 0xff, tk = r >> 8;
+                if (ts > 1 || tk > 4 || !zone_card_any(ts, tk)) continue;
+                call_game(c, F_STATS, ts, tk, g_sl_buf, 0);
+                sa += *(const int32_t *)A->mem(g_sl_buf + 20); sd += *(const int32_t *)A->mem(g_sl_buf + 24);
+            }
+            g_ra_pending[side][0] = sa; g_ra_pending[side][1] = sd;
+            if (getenv("TF3_DEBUG_SLIFER")) A->log("god: Ra Tributes sum ATK %d DEF %d", sa, sd);
+        }
         *(uint16_t *)A->mem(SUMMON_PICKS + 4) = 0;
         *count = 2;
         *step = 22;
@@ -1870,7 +1902,7 @@ static int hk_summon_exec(TfCpu *c) {
  * 09f79cec + 8044 + ref * 4 (as 09f55818 reads it). The engine only knows 1 or 2 Tributes, so Slifer gets no command while its side has fewer than 3 monsters. */
 static int hk_summon_mask(TfCpu *c) {
     const uint32_t side = A->reg(c, 4) & 1, ref = A->reg(c, 5);
-    if (ref >= 200 || (*(const uint16_t *)A->mem(DUEL_SIDES + 8044 + ref * 4) & 0x1fff) != slot_of(4999)) return 0;
+    if (ref >= 200 || !is_god(*(const uint16_t *)A->mem(DUEL_SIDES + 8044 + ref * 4) & 0x1fff)) return 0;
     uint32_t n = 0;
     for (uint32_t k = 0; k < 5; k++) n += zone_card_any(side, k);
     if (n >= 3) return 0;
@@ -1880,13 +1912,13 @@ static int hk_summon_mask(TfCpu *c) {
 
 /* "If Special Summoned, it is sent to the Graveyard during the End Phase." */
 static void slifer_end_phase(TfCpu *c) {
-    const uint16_t sl = slot_of(4999);
-    if (!sl) return;
+    if (!any_god()) return;
     for (uint32_t s = 0; s < 2; s++) for (uint32_t k = 0; k < 5; k++) {
-        if (!g_sl_special[s][k] || zone_card(s, k) != sl) continue;
-        if (getenv("TF3_DEBUG_SLIFER")) A->log("slifer: End Phase, sending the Special Summoned Slifer (side %u slot %u) to the Graveyard", s, k);
+        const uint32_t g = zone_card(s, k);
+        if (!g_sl_special[s][k] || !is_god(g)) continue;
+        if (getenv("TF3_DEBUG_SLIFER")) A->log("god: End Phase, sending the Special Summoned card %u (side %u slot %u) to the Graveyard", g, s, k);
         g_sl_special[s][k] = false;
-        call_game6(c, 0x09f34d64, s, k, 14, 2, sl, 0);
+        call_game6(c, 0x09f34d64, s, k, 14, 2, g, 0);
     }
 }
 
@@ -2087,7 +2119,7 @@ extern "C" __declspec(dllexport) int tfmod_init(const TfModApi *api) {
         A->hook(0x09ea00fc, hk_after_attack_mark);
         A->hook(0x09ea53f4, hk_after_attack_defense);
     }
-    if (!g_trig_summon.empty() || slot_of(4999) || getenv("TF3_DEBUG_POST_ALL")) A->hook(F_POST_ACTION, hk_post_action);
+    if (!g_trig_summon.empty() || any_god() || getenv("TF3_DEBUG_POST_ALL")) A->hook(F_POST_ACTION, hk_post_action);
     if (real_event_ids() && !g_trig.empty()) A->hook(0x09eb53b0, hk_event_store);
     if (!g_trig_battle.empty() || getenv("TF3_DEBUG_BATTLE")) { A->hook(F_BATTLE, hk_battle); A->hook(F_BATTLE_DMG, hk_battle_dmg); }
     if (!g_stat.empty()) {
@@ -2123,7 +2155,7 @@ extern "C" __declspec(dllexport) int tfmod_init(const TfModApi *api) {
     }
     if (getenv("TF3_DEBUG_CAND")) { A->hook(F_CAND_RUN, hk_cand_run_debug); A->hook(F_CAND_COUNT, hk_cand_count_debug); }
     else if (!g_fx.empty()) { A->hook(F_CAND_RUN, hk_cand_run); A->hook(F_CAND_COUNT, hk_cand_count); A->hook(F_MOVE_PICKED, hk_move_to_hand); }
-    if (slot_of(4999)) { A->hook(0x09f538ac, hk_target_legal); A->hook(0x09e91fe8, hk_summon_exec); A->hook(0x09e8edf4, hk_summon_mask); if (getenv("TF3_SLIFER_LEVEL")) A->hook(0x0884b77c, hk_exp_level); }
+    if (any_god()) { A->hook(0x09f538ac, hk_target_legal); A->hook(0x09e91fe8, hk_summon_exec); A->hook(0x09e8edf4, hk_summon_mask); if (getenv("TF3_SLIFER_LEVEL")) A->hook(0x0884b77c, hk_exp_level); }
     if (!g_amt.empty()) A->hook(F_DRAW, hk_draw);
     A->hook(F_LP_AMOUNTS, hk_lp_amounts);
     A->hook(F_EFFECT_DRIVER, hk_effect_driver);
