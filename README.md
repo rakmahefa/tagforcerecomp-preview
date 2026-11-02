@@ -65,7 +65,7 @@ Behavior mods in this repository (sources in [`plugins/src/`](plugins/src/)):
 | **Booster box** (`BoosterBox`) | buy all remaining packs of a booster at once in the shop |
 | **Card Randomizer** (`CardRandomizer`) | every deck of every duel is refilled with random cards from the whole card pool |
 | **Player / Opponent Deck Randomizer** (`PlayerDeckRandomizer`, `OpponentDeckRandomizer`) | every duel, your / the opponent's deck becomes a random whole recipe of the game, with its own deck name; use one or both |
-| **Story Duel LP** (`StoryLP`) | story duels start with 4000 LP for both duelists instead of 8000 (value in `config.ini`) |
+| **Story Duel LP** (`StoryLP`) | story duels start with the LP set in `config.ini` (default 8000, any value 100..99999) |
 | **Monsters on the field** (`MonstersOnField`) | *experimental prototype*: shows your face-up monsters larger over their zone |
 | **Mouse Menus** (`MouseMenus`) | *experimental*: hover a row of the game's menu lists to move the cursor, click to confirm |
 | **TF3 Cards** (`TF3Cards`) | *experimental*: adds the cards that exist only in Tag Force 3 (art and texts in five languages); some already have their effect. See its README |
@@ -87,6 +87,12 @@ slider settings in the menu. See [`docs/MODS.md`](docs/MODS.md) to build your ow
 Nothing needs to be installed: the zip carries the runtime, FFmpeg, a small C compiler (TinyCC) and the translator. It contains **no
 game data and no game code**: the game's code is translated from your copy on your computer (`gen/`), compiled once (a few seconds,
 kept in `gen/jitcache/`) and loaded in memory each time the game starts.
+
+**Controllers.** XInput and generic DirectInput controllers are supported. Generic buttons can be assigned by pressing them in the launcher; numbered buttons appear as Button 1, Button 2, etc. The left stick and D-pad provide movement. Default generic button order is 1-4 for face buttons, 5-6 for shoulders and 7-8 for Select/Start; remap it if your controller differs.
+
+**Running.** The game runs while Cancel / Circle is held. The Run controller field shows that same button (for example, Hold B). Remapping either Run or Cancel updates both. The keyboard Run shortcut remains separately assignable.
+
+**Remapping.** Open **Controls** in the launcher. Click a keyboard slot and press a key, or click a controller slot and press a controller button (including LT/RT). Each action has one keyboard field and one controller field. Remapping a keyboard field replaces its default aliases. Escape cancels capture; Delete clears a slot; **Restore defaults** resets the layout. Settings save automatically and apply after restarting the game. Stick movement, card-text scrolling and mouse buttons keep their defaults.
 
 **Controls.** Keyboard and mouse (default PC layout): WASD or arrows; Space, E or left click = ✕; Backspace, C or right click = ○;
 F = □; R = △; Q / Tab = L / R; Enter = START; Ctrl = SELECT; Shift = run; mouse wheel = up/down (over the card text box in duels it scrolls the text); PageUp / PageDown or the right stick also scroll the card text. The classic layout (arrows, Z = ✕,

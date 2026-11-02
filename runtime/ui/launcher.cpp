@@ -1,3 +1,5 @@
+#include "input_bindings.h"
+#include "hotkeys.h"
 /* Start window (sidebar layout, in the style of PC port launchers): the pages on the left (Play, Graphics, Game, Mods, Cheats, About) and Quit;
  * content on the right; a fixed bottom bar with the status and the Stop/PLAY buttons.
  *  - Play: title banner, "Ready check" and the three main options;
@@ -11,6 +13,8 @@
 #include <commdlg.h>
 #include <dwmapi.h>
 #include <shellapi.h>
+#include <objidl.h>
+#include <gdiplus.h>
 #include <string>
 #include <thread>
 #include <mutex>
@@ -31,9 +35,9 @@ typedef void (*InstProgress)(double frac, const wchar_t *msg, void *ctx);
 bool iso_install(const wchar_t *iso, const wchar_t *dest, InstProgress cb, void *ctx, std::wstring *err);
 
 enum { ID_PICK = 101, ID_PLAY = 102, ID_QUIT = 103, ID_STOP = 105, ID_LOGS = 106, ID_SAVES = 107, ID_MODDIR = 108, ID_MODALL = 109, ID_UPDATE = 111, ID_TEXDIR = 110, ID_COPT0 = 400, ID_OPT0 = 200, ID_QOPT0 = 300, TIMER_UI = 1 };
-enum { PG_PLAY, PG_GRAPHICS, PG_GAME, PG_MODS, PG_CHEATS, PG_ABOUT, N_PAGES };
+enum { PG_PLAY, PG_GRAPHICS, PG_GAME, PG_MODS, PG_CHEATS, PG_CONTROLS, PG_ABOUT, N_PAGES };
 enum { NAV_QUIT = N_PAGES };   /* item extra da sidebar (nao e pagina) */
-static const wchar_t *kNavName[N_PAGES] = {L"Play", L"Graphics", L"Game", L"Mods", L"Cheats", L"About"};
+static const wchar_t *kNavName[N_PAGES] = {L"Play", L"Graphics", L"Game", L"Mods", L"Cheats", L"Controls", L"About"};
 static HWND g_wnd, g_bpick, g_play, g_bstop, g_blogs, g_bsaves, g_bmoddir, g_bmodall, g_btex;
 static HWND g_bupd;
 static std::wstring g_upd_ver, g_upd_url, g_upd_notes;   /* newer GitHub release found by the background check (empty = none) */
@@ -87,7 +91,7 @@ static void mods_all(bool on) { for (auto &e : g_modlist) mods_dir_set_enabled(m
 static bool file_exists(const std::wstring &p); static bool dir_exists(const std::wstring &p);
 /* Cheats page: cheats.ini next to the exe (cheats.cpp reads it at start; the master switch is its "enabled" key) */
 struct CheatOpt { const wchar_t *label, *hint; int count; const wchar_t *const *names; };
-static const int N_CHEAT = 6;
+static const int N_CHEAT = 8;
 static const wchar_t *const kOnOff[2] = {L"Off", L"On"}, *const kCorner[4] = {L"Top left", L"Top right", L"Bottom left", L"Bottom right"},
     *const kMult[10] = {L"x1 (normal)", L"x2", L"x3", L"x4", L"x5", L"x6", L"x7", L"x8", L"x9", L"x10"};
 static const CheatOpt kCheat[N_CHEAT] = {
@@ -95,10 +99,12 @@ static const CheatOpt kCheat[N_CHEAT] = {
     {L"See the opponent's cards", L"Shows the opponent's hand and field in a panel during duels (F6 in game).", 2, kOnOff},
     {L"Card panel position", L"Corner of the screen where that panel is drawn.", 4, kCorner},
     {L"DP multiplier", L"Multiplies the DP you win in duels.", 10, kMult},
-    {L"Unlock everything", L"Unlocks all cards, packs and duelists each time the game loads your save. In game, F2 does it once.", 2, kOnOff},
+    {L"Unlock everything", L"F2 in game: unlock everything once. On: unlock each time a save loads.", 2, kOnOff},
     {L"Fast-forward", L"Game speed when the game starts (the music keeps its pitch). In game: Cheats menu, or L + R + Left / Right.", 8, kMult},
+    {L"Remove banlist", L"Allow up to three copies of any card, including forbidden cards.", 2, kOnOff},
+    {L"Unlimited card copies", L"Allow any number of copies of owned cards in a deck. Also removes the banlist.", 2, kOnOff},
 };
-static HWND g_csel[N_CHEAT]; static int g_cc[N_CHEAT] = {1, 0, 1, 0, 0, 0};
+static HWND g_csel[N_CHEAT]; static int g_cc[N_CHEAT] = {1, 0, 1, 0, 0, 0, 0, 0};
 std::wstring cheats_ini_path(void);   /* cheats.cpp */
 static bool cheat_read(const std::wstring &path) {
     FILE *f = _wfopen(path.c_str(), L"r"); if (!f) return false;
@@ -110,20 +116,41 @@ static bool cheat_read(const std::wstring &path) {
         else if (sscanf(l, "panel_corner=%d", &v) == 1) g_cc[2] = std::max(0, std::min(3, v));
         else if (sscanf(l, "dp_multiplier=%d", &v) == 1) g_cc[3] = std::max(1, std::min(10, v)) - 1;
         else if (sscanf(l, "fast_forward=%d", &v) == 1) g_cc[5] = std::max(1, std::min(8, v)) - 1;
+        else if (sscanf(l, "no_banlist=%d", &v) == 1) g_cc[6] = v != 0;
+        else if (sscanf(l, "free_copies=%d", &v) == 1) g_cc[7] = v != 0;
     }
     fclose(f); return true;
 }
 static void cheat_load() {
-    g_cc[0] = 1; g_cc[1] = 0; g_cc[2] = 1; g_cc[3] = 0; g_cc[4] = 0; g_cc[5] = 0;
+    g_cc[0] = 1; g_cc[1] = 0; g_cc[2] = 1; g_cc[3] = 0; g_cc[4] = 0; g_cc[5] = 0; g_cc[6] = 0; g_cc[7] = 0;
     if (cheat_read(cheats_ini_path())) return;
     const std::wstring old = exe_dir() + L"mods/Cheats";   /* settings from when Cheats was a mod: cheats.cpp imports the same files on the first start */
     if (cheat_read(old + L"/config.ini") && file_exists(old + L"/disabled")) g_cc[0] = 0;
 }
 static void cheat_save() {
-    if (FILE *f = _wfopen(cheats_ini_path().c_str(), L"w")) { fprintf(f, "enabled=%d\nshow_opponent_cards=%d\npanel_corner=%d\ndp_multiplier=%d\nunlock_on_start=%d\nfast_forward=%d\n", g_cc[0], g_cc[1], g_cc[2], g_cc[3] + 1, g_cc[4], g_cc[5] + 1); fclose(f); }
+    if (FILE *f = _wfopen(cheats_ini_path().c_str(), L"w")) { fprintf(f, "enabled=%d\nshow_opponent_cards=%d\npanel_corner=%d\ndp_multiplier=%d\nunlock_on_start=%d\nfast_forward=%d\nno_banlist=%d\nfree_copies=%d\n", g_cc[0], g_cc[1], g_cc[2], g_cc[3] + 1, g_cc[4], g_cc[5] + 1, g_cc[6], g_cc[7]); fclose(f); }
 }
 static void cheat_text() { for (int i = 0; i < N_CHEAT; i++) { SetWindowTextW(g_csel[i], kCheat[i].names[g_cc[i]]); InvalidateRect(g_csel[i], nullptr, FALSE); } }
 static void cheat_step(int i, int dir) { g_cc[i] = (g_cc[i] + dir + kCheat[i].count) % kCheat[i].count; cheat_save(); cheat_text(); }
+static HWND g_bind[bindings::count][4], g_reset;
+static int g_capture = -1;
+static bool g_pad_armed;
+static ULONGLONG g_capture_until;
+static void binding_text() {
+    for(int i=0;i<bindings::count;i++) for(int j : {0,3}) {
+        int v=bindings::load(i,j); std::wstring label=bindings::key_name(v);
+        if(j==0) for(int slot=1;slot<3;slot++) { int extra=bindings::load(i,slot); if(extra) { if(v) label+=L" / "; else { label.clear(); v=extra; } label+=bindings::key_name(extra); } }
+        if(j==3) label=bindings::controller_label(i);
+        if(g_capture==i*4+j) label=j==3?L"Press a button...":L"Press a key...";
+        SetWindowTextW(g_bind[i][j],label.c_str()); InvalidateRect(g_bind[i][j],nullptr,FALSE);
+    }
+}
+static void binding_save(int row,int slot,int value) {
+    if(!bindings::save(row,slot,value)) tf_msgbox(g_wnd,L"Could not save the control binding.",L"Controls",MB_ICONERROR);
+    if(slot==0) { bindings::save(row,1,0); bindings::save(row,2,0); }
+    WritePrivateProfileStringW(L"controles",L"teclado_mouse_pc",L"1",app_ini_path().c_str());
+    g_capture=-1; binding_text();
+}
 static int S(int v) { return MulDiv(v, g_dpi, 96); }
 /* medidas em 96 dpi */
 static const int W96 = 1120, H96 = 720, SIDE96 = 220, BAR96 = 72;
@@ -246,6 +273,8 @@ static int sel_option(int id) { return id >= ID_QOPT0 ? kQuick[id - ID_QOPT0] : 
 
 /* which controls each page shows */
 static void apply_page() {
+    for(auto &row:g_bind) for(HWND b:row) if(b) ShowWindow(b,g_page==PG_CONTROLS?SW_SHOW:SW_HIDE);
+    ShowWindow(g_reset,g_page==PG_CONTROLS?SW_SHOW:SW_HIDE);
     for (int i = 0; i < N_OPT; i++) ShowWindow(g_sel[i], g_page == PG_GRAPHICS ? SW_SHOW : SW_HIDE);
     ShowWindow(g_btex, g_page == PG_GRAPHICS ? SW_SHOW : SW_HIDE);
     for (int i = 0; i < N_CHEAT; i++) ShowWindow(g_csel[i], g_page == PG_CHEATS ? SW_SHOW : SW_HIDE);
@@ -256,9 +285,11 @@ static void apply_page() {
 }
 static void refresh() {
     bool busy = g_installing, run = game_running();
+    for(auto &row:g_bind) for(HWND b:row) if(b) EnableWindow(b,!run && !busy);
+    EnableWindow(g_reset,!run && !busy);
     EnableWindow(g_play, !busy && !run && (g_installed || iso_ok())); EnableWindow(g_bpick, !busy && !run); EnableWindow(g_bmodall, !busy && !run);
     { bool any = false; for (auto &e : g_modlist) any |= e.enabled; SetWindowTextW(g_bmodall, any ? L"Disable all mods" : L"Enable all mods"); }
-    EnableWindow(g_bstop, run); for (int i = 0; i < N_CHEAT; i++) EnableWindow(g_csel[i], !run);
+    EnableWindow(g_bstop, run); for (int i = 0; i < N_CHEAT; i++) EnableWindow(g_csel[i], !run && (i == 0 || g_cc[0]));
     for (int i = 0; i < N_OPT; i++) EnableWindow(g_sel[i], !run); for (int k = 0; k < NQ; k++) EnableWindow(g_qsel[k], !run);
     SetWindowTextW(g_play, run ? L"PLAYING..." : g_installed ? L"PLAY" : L"INSTALL AND PLAY"); SetWindowTextW(g_bpick, g_installed ? L"Reinstall from ISO..." : L"Select ISO...");
     apply_page();
@@ -266,7 +297,7 @@ static void refresh() {
     for (HWND b : {g_bpick, g_play, g_bstop, g_blogs, g_bsaves, g_bmoddir, g_bmodall, g_btex}) InvalidateRect(b, nullptr, FALSE);
     for (int i = 0; i < N_OPT; i++) InvalidateRect(g_sel[i], nullptr, FALSE); for (int k = 0; k < NQ; k++) InvalidateRect(g_qsel[k], nullptr, FALSE);
 }
-static void show_page(int p) { if (p == g_page) return; g_page = p; if (p == PG_MODS) { mods_reload(); g_modscroll = 0; } if (p == PG_CHEATS) { cheat_load(); cheat_text(); } refresh(); }
+static void show_page(int p) { if (p == g_page) return; g_capture = -1; binding_text(); g_page = p; if (p == PG_MODS) { mods_reload(); g_modscroll = 0; } if (p == PG_CHEATS) { cheat_load(); cheat_text(); } refresh(); }
 static bool pick(HWND owner) {
     wchar_t buf[1024] = L"";
     OPENFILENAMEW of = {}; of.lStructSize = sizeof of; of.hwndOwner = owner;
@@ -315,6 +346,46 @@ static bool is_hot(HWND b) {
 }
 static void text(HDC dc, HFONT f, COLORREF c, RECT r, const wchar_t *t, UINT fl = DT_LEFT | DT_SINGLELINE | DT_VCENTER) {
     HGDIOBJ o = SelectObject(dc, f); SetTextColor(dc, c); DrawTextW(dc, t, -1, &r, fl); SelectObject(dc, o);
+}
+/* The controller PNG is embedded so every packaged launcher has the same artwork. */
+static void device_icon(HDC dc,int x,int y,bool pad) {
+    if(pad) {
+        struct ControllerImage {
+            IStream *stream=nullptr;
+            Gdiplus::Bitmap *bitmap=nullptr;
+            ControllerImage() {
+                if(!dark::gdiplus()) return;
+                HMODULE module=GetModuleHandleW(nullptr);
+                HRSRC resource=FindResourceW(module,MAKEINTRESOURCEW(201),MAKEINTRESOURCEW(10));
+                if(!resource) return;
+                DWORD size=SizeofResource(module,resource);
+                const void *data=LockResource(LoadResource(module,resource));
+                if(!data || !size) return;
+                HGLOBAL memory=GlobalAlloc(GMEM_MOVEABLE,size); if(!memory) return;
+                void *bytes=GlobalLock(memory); if(!bytes) { GlobalFree(memory); return; }
+                memcpy(bytes,data,size); GlobalUnlock(memory);
+                if(FAILED(CreateStreamOnHGlobal(memory,TRUE,&stream))) { GlobalFree(memory); return; }
+                bitmap=Gdiplus::Bitmap::FromStream(stream);
+                if(bitmap && bitmap->GetLastStatus()!=Gdiplus::Ok) { delete bitmap; bitmap=nullptr; }
+            }
+            ~ControllerImage() { delete bitmap; if(stream) stream->Release(); }
+        };
+        static ControllerImage image;
+        if(image.bitmap) {
+            Gdiplus::Graphics graphics(dc);
+            graphics.SetInterpolationMode(Gdiplus::InterpolationModeHighQualityBicubic);
+            graphics.SetPixelOffsetMode(Gdiplus::PixelOffsetModeHalf);
+            graphics.DrawImage(image.bitmap,x,y,S(32),S(21));
+        }
+        return;
+    }
+    HPEN pen=CreatePen(PS_SOLID,S(2),C_ACC);
+    HGDIOBJ oldpen=SelectObject(dc,pen),oldbrush=SelectObject(dc,GetStockObject(NULL_BRUSH));
+    auto line=[&](int a,int b,int c,int d) { MoveToEx(dc,x+S(a),y+S(b),nullptr); LineTo(dc,x+S(c),y+S(d)); };
+    RoundRect(dc,x,y,x+S(32),y+S(20),S(4),S(4));
+    for(int row=0;row<2;row++) for(int col=0;col<5;col++) line(5+col*5,5+row*5,7+col*5,5+row*5);
+    line(9,15,23,15);
+    SelectObject(dc,oldpen); SelectObject(dc,oldbrush); DeleteObject(pen);
 }
 static void focus_ring(HDC dc, RECT r) {
     RECT f = r; InflateRect(&f, -S(3), -S(3)); HPEN p = CreatePen(PS_DOT, 1, RGB(200, 200, 210)); HGDIOBJ op = SelectObject(dc, p), ob = SelectObject(dc, GetStockObject(NULL_BRUSH));
@@ -367,23 +438,82 @@ static RECT mod_area() { RECT cr; GetClientRect(g_wnd, &cr); return RECT{S(SIDE9
 static int mod_rows_visible() { RECT a = mod_area(); return std::max(1, (int)((a.bottom - a.top) / mod_row_h())); }
 static void mod_clamp_scroll() { int mx = std::max(0, (int)g_modlist.size() - mod_rows_visible()); g_modscroll = std::min(std::max(g_modscroll, 0), mx); }
 static RECT mod_row_rect(int k) { RECT a = mod_area(); int y = a.top + (k - g_modscroll) * mod_row_h(); return RECT{a.left, y, a.right, y + mod_row_h() - S(8)}; }
-static RECT mod_btn_rect(RECT row, int part) {   /* part 1 = subir, 2 = descer */
-    int sz = S(30), x = row.right - S(14) - sz * 2 - S(8) + (part == 2 ? sz + S(8) : 0), y = (row.top + row.bottom - sz) / 2; return RECT{x, y, x + sz, y + sz};
+static bool mod_has_edit(const ModEntry &e);
+static RECT mod_btn_rect(RECT row, int part) {   /* part 1 = subir, 2 = descer, 3 = Edit (so mods com valor editavel) */
+    int sz = S(30), y = (row.top + row.bottom - sz) / 2;
+    if (part == 3) { int w = S(60), x = row.right - S(14) - sz * 2 - S(8) - S(12) - w; return RECT{x, y, x + w, y + sz}; }
+    int x = row.right - S(14) - sz * 2 - S(8) + (part == 2 ? sz + S(8) : 0); return RECT{x, y, x + sz, y + sz};
 }
 /* devolve a linha (0 = topo) e a parte: 0 liga/desliga, 1 subir prioridade, 2 descer; -1 fora */
 static int mod_hit(int x, int y, int *part) {
     RECT a = mod_area(); POINT pt = {x, y}; if (!PtInRect(&a, pt)) return -1;
     for (int k = g_modscroll; k < (int)g_modlist.size() && k < g_modscroll + mod_rows_visible(); k++) {
         RECT r = mod_row_rect(k); if (!PtInRect(&r, pt)) continue;
-        for (int p = 1; p <= 2; p++) { RECT b = mod_btn_rect(r, p); if (PtInRect(&b, pt)) { *part = p; return k; } }
+        const bool ed = mod_has_edit(g_modlist[(int)g_modlist.size() - 1 - k]);
+        for (int p = 1; p <= (ed ? 3 : 2); p++) { RECT b = mod_btn_rect(r, p); if (PtInRect(&b, pt)) { *part = p; return k; } }
         *part = 0; return k;
     }
     return -1;
 }
+/* Story Duel LP: value of mods/StoryLP/config.ini (lp=), edited here in a small modal box. */
+enum { LPD_EDIT = 301, LPD_OK = 302, LPD_CANCEL = 303 };
+static const int kStoryLpDefault = 8000, kStoryLpMin = 100, kStoryLpMax = 99999;
+static std::wstring story_lp_path() { return exe_dir() + L"mods\\StoryLP\\config.ini"; }
+static int story_lp_read() {
+    int lp = kStoryLpDefault;
+    if (FILE *f = _wfopen(story_lp_path().c_str(), L"r")) { char l[96]; int v; while (fgets(l, sizeof l, f)) if (sscanf(l, "lp=%d", &v) == 1 && v >= kStoryLpMin && v <= kStoryLpMax) lp = v; fclose(f); }
+    return lp;
+}
+static void story_lp_write(int lp) {
+    if (FILE *f = _wfopen(story_lp_path().c_str(), L"w")) { fprintf(f, "; Starting Life Points of story duels, both duelists (%d..%d). The game's own value is %d.\nlp=%d\n", kStoryLpMin, kStoryLpMax, kStoryLpDefault, lp); fclose(f); }
+}
+static int g_lpd_state; static HWND g_lpd_edit;   /* 0 open, 1 OK, 2 cancel */
+static LRESULT CALLBACK lpd_proc(HWND h, UINT m, WPARAM w, LPARAM l) {
+    if (m == WM_COMMAND && LOWORD(w) == LPD_OK) { g_lpd_state = 1; return 0; }
+    if (m == WM_COMMAND && LOWORD(w) == LPD_CANCEL) { g_lpd_state = 2; return 0; }
+    if (m == WM_CLOSE) { g_lpd_state = 2; return 0; }
+    if (m == WM_ACTIVATE && LOWORD(w) != WA_INACTIVE && g_lpd_edit) { SetFocus(g_lpd_edit); return 0; }
+    if (m == WM_CTLCOLORSTATIC) { SetTextColor((HDC)w, dark::TXT); SetBkColor((HDC)w, dark::BG); return (LRESULT)dark::brush(dark::BG); }
+    if (m == WM_CTLCOLOREDIT) { SetTextColor((HDC)w, dark::TXT); SetBkColor((HDC)w, dark::CARD); return (LRESULT)dark::brush(dark::CARD); }
+    if (m == WM_DRAWITEM) { const DRAWITEMSTRUCT *d = (const DRAWITEMSTRUCT *)l; dark::draw_button(d, d->CtlID == LPD_OK, g_fBtn); return TRUE; }
+    return DefWindowProcW(h, m, w, l);
+}
+/* Asks for the Story Duel LP; saves it when confirmed. Out-of-range input is rejected with a message and the box stays open. */
+static void story_lp_edit() {
+    HINSTANCE hi = GetModuleHandleW(nullptr); static bool reg;
+    if (!reg) { WNDCLASSW wc = {}; wc.lpfnWndProc = lpd_proc; wc.hInstance = hi; wc.lpszClassName = L"TagForceLpBox"; wc.hCursor = LoadCursorW(nullptr, (LPCWSTR)IDC_ARROW); wc.hbrBackground = dark::brush(dark::BG); RegisterClassW(&wc); reg = true; }
+    const int cw = S(380), ch = S(150); const DWORD st = WS_POPUP | WS_CAPTION | WS_SYSMENU | WS_CLIPCHILDREN;
+    RECT r = {0, 0, cw, ch}; AdjustWindowRect(&r, st, FALSE); RECT o; GetWindowRect(g_wnd, &o);
+    const int ww = r.right - r.left, wh = r.bottom - r.top;
+    HWND win = CreateWindowExW(WS_EX_DLGMODALFRAME, L"TagForceLpBox", L"Story Duel LP", st, (o.left + o.right - ww) / 2, (o.top + o.bottom - wh) / 2, ww, wh, g_wnd, nullptr, hi, nullptr);
+    if (!win) return;
+    wchar_t cur[16], lab[128]; swprintf(cur, 16, L"%d", story_lp_read()); swprintf(lab, 128, L"Starting LP of story duels (%d to %d, game default %d):", kStoryLpMin, kStoryLpMax, kStoryLpDefault);
+    HWND lbl = CreateWindowW(L"STATIC", lab, WS_CHILD | WS_VISIBLE | SS_ENDELLIPSIS, S(12), S(10), cw - S(24), S(22), win, nullptr, hi, nullptr);
+    g_lpd_edit = CreateWindowExW(WS_EX_CLIENTEDGE, L"EDIT", cur, WS_CHILD | WS_VISIBLE | WS_TABSTOP | ES_NUMBER | ES_AUTOHSCROLL, S(12), S(40), cw - S(24), S(28), win, (HMENU)LPD_EDIT, hi, nullptr);
+    HWND ok = CreateWindowW(L"BUTTON", L"OK", WS_CHILD | WS_VISIBLE | BS_OWNERDRAW, cw - S(208), ch - S(48), S(94), S(32), win, (HMENU)LPD_OK, hi, nullptr);
+    HWND ca = CreateWindowW(L"BUTTON", L"Cancel", WS_CHILD | WS_VISIBLE | BS_OWNERDRAW, cw - S(106), ch - S(48), S(94), S(32), win, (HMENU)LPD_CANCEL, hi, nullptr);
+    for (HWND c : {lbl, g_lpd_edit, ok, ca}) SendMessageW(c, WM_SETFONT, (WPARAM)g_fText, TRUE);
+    dark::title_bar(win); dark::theme_control(g_lpd_edit); SendMessageW(g_lpd_edit, EM_LIMITTEXT, 5, 0); SendMessageW(g_lpd_edit, EM_SETSEL, 0, -1);
+    EnableWindow(g_wnd, FALSE); ShowWindow(win, SW_SHOW); SetForegroundWindow(win); SetFocus(g_lpd_edit);
+    g_lpd_state = 0; MSG msg;
+    while (g_lpd_state != 2 && IsWindow(win)) {
+        if (g_lpd_state == 1) {
+            wchar_t buf[16] = {}; GetWindowTextW(g_lpd_edit, buf, 16); const int v = _wtoi(buf);
+            if (v >= kStoryLpMin && v <= kStoryLpMax) { story_lp_write(v); break; }
+            MessageBoxW(win, L"Enter a number between 100 and 99999.", L"Story Duel LP", MB_OK | MB_ICONINFORMATION); g_lpd_state = 0; SetFocus(g_lpd_edit); continue;
+        }
+        if (!GetMessageW(&msg, nullptr, 0, 0)) { PostQuitMessage((int)msg.wParam); break; }
+        if (msg.message == WM_KEYDOWN && (msg.wParam == VK_RETURN || msg.wParam == VK_ESCAPE) && (msg.hwnd == g_lpd_edit)) { g_lpd_state = msg.wParam == VK_RETURN ? 1 : 2; continue; }
+        TranslateMessage(&msg); DispatchMessageW(&msg);
+    }
+    g_lpd_edit = nullptr; EnableWindow(g_wnd, TRUE); DestroyWindow(win); SetForegroundWindow(g_wnd);
+}
+static bool mod_has_edit(const ModEntry &e) { return e.enabled && e.folder == "StoryLP"; }
 static void mod_click(int x, int y) {
     int part = 0, k = mod_hit(x, y, &part); if (k < 0 || game_running() || g_installing) return;
     const int n = (int)g_modlist.size(); const std::string folder = g_modlist[n - 1 - k].folder;
-    if (part == 0) mods_dir_set_enabled(mods_dir(), folder, !g_modlist[n - 1 - k].enabled);
+    if (part == 3) { story_lp_edit(); refresh(); return; }
+    if (part == 0) { const bool turning_on = !g_modlist[n - 1 - k].enabled; mods_dir_set_enabled(mods_dir(), folder, turning_on); if (turning_on && folder == "StoryLP") { mods_reload(); refresh(); story_lp_edit(); } }
     else if ((part == 1 && k > 0) || (part == 2 && k < n - 1)) mods_dir_move(mods_dir(), folder, part == 1 ? 1 : -1);
     else return;
     mods_reload(); refresh();
@@ -403,9 +533,14 @@ static void draw_mods_page(HDC dc, int cx, int cw) {
         round_fill(dc, tg, e.enabled && !lock ? C_ACC : C_OFF, e.enabled && !lock ? C_ACC : C_LINE, S(12));
         int kn = S(18), kx = e.enabled ? tg.right - S(3) - kn : tg.left + S(3), ky = (tg.top + tg.bottom - kn) / 2;
         round_fill(dc, RECT{kx, ky, kx + kn, ky + kn}, e.enabled ? dark::ACC_TXT : C_DIM, e.enabled ? dark::ACC_TXT : C_DIM, S(9));
-        RECT nr = {tg.right + S(16), r.top + S(6), mod_btn_rect(r, 1).left - S(12), r.top + S(28)};
+        const bool ed = mod_has_edit(e); RECT nr = {tg.right + S(16), r.top + S(6), (ed ? mod_btn_rect(r, 3) : mod_btn_rect(r, 1)).left - S(12), r.top + S(28)};
         text(dc, g_fText, e.enabled ? C_TXT : C_DIM, nr, e.label.c_str(), DT_LEFT | DT_SINGLELINE | DT_VCENTER | DT_END_ELLIPSIS);
+        if (ed) {
+            RECT b = mod_btn_rect(r, 3); round_fill(dc, b, lock ? C_OFF : C_BTN, lock ? C_OFF : C_LINE, S(8));
+            text(dc, g_fBtn, lock ? dark::OFF_TXT : C_ACC, b, L"Edit", DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+        }
         std::wstring d = e.detail.empty() ? std::wstring(e.enabled ? L"On" : L"Off") : e.detail + (e.enabled ? L"" : L"  \x00B7  off");
+        if (ed) { wchar_t lp[48]; swprintf(lp, 48, L"  \x00B7  Story LP: %d", story_lp_read()); d += lp; }
         text(dc, g_fSmall, C_DIM, RECT{nr.left, r.top + S(28), nr.right, r.bottom - S(4)}, d.c_str(), DT_LEFT | DT_SINGLELINE | DT_VCENTER | DT_END_ELLIPSIS);
         for (int p = 1; p <= 2; p++) {
             RECT b = mod_btn_rect(r, p); bool can = !lock && (p == 1 ? k > 0 : k < n - 1);
@@ -460,7 +595,9 @@ static void paint(HWND h) {
     HBRUSH bg = CreateSolidBrush(C_BG); FillRect(dc, &cr, bg); DeleteObject(bg);
     SetBkMode(dc, TRANSPARENT);
     const int SW = S(SIDE96), BH = S(BAR96), cx = SW + S(28), cw = cr.right - S(28) - cx;
-    bool busy = g_installing, run = game_running(); std::wstring msg, err; { std::lock_guard<std::mutex> lk(g_mu); msg = g_msg; err = g_err; }
+    bool busy = g_installing, run = game_running();
+    for(auto &row:g_bind) for(HWND b:row) if(b) EnableWindow(b,!run && !busy);
+    EnableWindow(g_reset,!run && !busy); std::wstring msg, err; { std::lock_guard<std::mutex> lk(g_mu); msg = g_msg; err = g_err; }
 
     /* sidebar */
     { RECT sb = {0, 0, SW, cr.bottom}; HBRUSH b = CreateSolidBrush(C_SIDE); FillRect(dc, &sb, b); DeleteObject(b);
@@ -553,13 +690,25 @@ static void paint(HWND h) {
         }
     } else if (g_page == PG_MODS) {
         draw_mods_page(dc, cx, cw);
+    } else if (g_page == PG_CONTROLS) {
+        text(dc,g_fHead,C_TXT,RECT{cx,S(22),cx+cw,S(58)},L"Controls");
+        text(dc,g_fSub,C_DIM,RECT{cx,S(58),cx+cw,S(80)},L"Saved automatically. Close and restart the game to apply changes.");
+        text(dc,g_fSmall,C_DIM,RECT{cx,S(84),cx+S(180),S(108)},L"ACTION");
+        device_icon(dc,cx+S(202),S(88),false);
+        text(dc,g_fText,C_ACC,RECT{cx+S(244),S(82),cx+S(490),S(110)},L"Keyboard");
+        device_icon(dc,cx+S(512),S(88),true);
+        text(dc,g_fText,C_ACC,RECT{cx+S(554),S(82),cx+S(800),S(110)},L"Controller");
+        for(int i=0;i<bindings::count;i++) text(dc,g_fText,C_TXT,RECT{cx,S(114+i*32),cx+S(185),S(144+i*32)},bindings::actions[i].name);
+        text(dc,g_fSmall,C_DIM,RECT{cx,S(540),cx+cw,S(564)},L"Click a keyboard slot, then press a key. Esc cancels; Delete clears. F1-F12, P and Alt are reserved.");
+        text(dc,g_fSmall,C_DIM,RECT{cx,S(566),cx+cw,S(590)},L"Run shares Cancel: hold its button to run. Remapping either controller field updates both. Left stick moves; right stick scrolls.");
     } else if (g_page == PG_CHEATS) {
         text(dc, g_fHead, C_TXT, RECT{cx, S(22), cx + cw, S(58)}, L"Cheats");
         text(dc, g_fSub, C_DIM, RECT{cx, S(58), cx + cw, S(80)}, L"For fun and testing. Part of the recomp (not a mod). Saved in cheats.ini; changes apply on the next start.");
         for (int i = 0; i < N_CHEAT; i++) {
             int y = S(100) + i * S(56);
-            text(dc, g_fText, C_TXT, RECT{cx, y, cx + cw - S(300), y + S(24)}, kCheat[i].label);
-            text(dc, g_fSmall, C_DIM, RECT{cx, y + S(24), cx + cw - S(290), y + S(44)}, kCheat[i].hint, DT_LEFT | DT_SINGLELINE | DT_VCENTER | DT_END_ELLIPSIS);
+            bool off = i > 0 && !g_cc[0];
+            text(dc, g_fText, off ? dark::OFF_TXT : C_TXT, RECT{cx, y, cx + cw - S(300), y + S(24)}, kCheat[i].label);
+            text(dc, g_fSmall, off ? dark::OFF_TXT : C_DIM, RECT{cx, y + S(24), cx + cw - S(290), y + S(44)}, kCheat[i].hint, DT_LEFT | DT_SINGLELINE | DT_VCENTER | DT_END_ELLIPSIS);
             RECT l = {cx, y + S(50), cx + cw, y + S(51)}; HBRUSH b = CreateSolidBrush(C_LINE); FillRect(dc, &l, b); DeleteObject(b);
         }
 } else {
@@ -612,6 +761,17 @@ static LRESULT CALLBACK proc(HWND h, UINT m, WPARAM w, LPARAM l) {
     switch (m) {
     case WM_COMMAND:
         if (g_installing && LOWORD(w) != ID_QUIT && LOWORD(w) != ID_LOGS && LOWORD(w) != ID_SAVES) return 0;
+        if(LOWORD(w)>=600 && LOWORD(w)<600+bindings::count*4) {
+            if(game_running()) return 0;
+            int n=LOWORD(w)-600,row=n/4,slot=n%4;
+            (void)row; (void)slot;
+            g_capture=n; g_pad_armed=false; g_capture_until=GetTickCount64()+15000; binding_text();
+            return 0;
+        }
+        if(LOWORD(w)==660) {
+            if(!game_running()) { for(int i=0;i<bindings::count;i++) for(int j=0;j<4;j++) bindings::save(i,j,j==3?bindings::actions[i].pad:bindings::actions[i].keys[j]); g_capture=-1; binding_text(); }
+            return 0;
+        }
         switch (LOWORD(w)) {
         case ID_PICK: if (pick(h)) { { std::lock_guard<std::mutex> lk(g_mu); g_err.clear(); } if (g_installed && iso_ok()) { if (tf_msgbox(h, L"Rebuild the jogo/ folder from this ISO? The files currently in the folder will be replaced.", L"Reinstall", MB_YESNO | MB_ICONQUESTION) == IDYES) start_install(); } refresh(); } return 0;
         case ID_PLAY:
@@ -630,7 +790,7 @@ static LRESULT CALLBACK proc(HWND h, UINT m, WPARAM w, LPARAM l) {
         case ID_MODALL: if (!game_running()) { bool any = false; for (auto &e : g_modlist) any |= e.enabled; mods_all(!any); refresh(); } return 0;
         default:
             if (LOWORD(w) >= ID_COPT0 && LOWORD(w) < ID_COPT0 + N_CHEAT) {
-                if (!game_running()) { HWND b = (HWND)l; POINT pt; GetCursorPos(&pt); RECT wr; GetWindowRect(b, &wr); cheat_step(LOWORD(w) - ID_COPT0, PtInRect(&wr, pt) && pt.x < wr.left + (wr.right - wr.left) / 3 ? -1 : 1); }
+                if (!game_running()) { HWND b = (HWND)l; POINT pt; GetCursorPos(&pt); RECT wr; GetWindowRect(b, &wr); cheat_step(LOWORD(w) - ID_COPT0, PtInRect(&wr, pt) && pt.x < wr.left + (wr.right - wr.left) / 3 ? -1 : 1); refresh(); }
                 return 0;
             }
             if (is_sel(LOWORD(w)) && !game_running()) {
@@ -664,9 +824,23 @@ static LRESULT CALLBACK proc(HWND h, UINT m, WPARAM w, LPARAM l) {
         if (g_page == PG_MODS) { g_modscroll -= GET_WHEEL_DELTA_WPARAM(w) / WHEEL_DELTA; mod_clamp_scroll(); InvalidateRect(h, nullptr, FALSE); }
         return 0;
     case WM_TIMER:
+        if(g_capture>=0) {
+            if(GetForegroundWindow()!=h || GetTickCount64()>=g_capture_until) { g_capture=-1; binding_text(); }
+            else if(g_capture%4==3) {
+                unsigned pressed=bindings::pressed_pad();
+                auto generic=bindings::poll_generic(h);
+                bool generic_held=generic.directions!=0;
+                for(bool button:generic.buttons) generic_held |= button;
+                unsigned choice=pressed;
+                if(pressed && (pressed&(pressed-1))) choice=0;
+                if(!pressed) choice=bindings::generic_capture(generic);
+                if(!pressed && !generic_held) g_pad_armed=true;
+                else if(g_pad_armed && choice) binding_save(g_capture/4,3,choice);
+            }
+        }
         if (w == TIMER_UI) {
-            { static bool was[24 + N_OPT]; static POINT lastp; int i = 0; POINT cp; GetCursorPos(&cp); bool moved = cp.x != lastp.x || cp.y != lastp.y; lastp = cp;   /* hover dos botoes: so redesenha quando muda */
-              std::vector<HWND> bs = {g_bpick, g_play, g_bstop, g_blogs, g_bsaves, g_bmoddir, g_bmodall, g_btex}; bs.insert(bs.end(), g_qsel, g_qsel + NQ); bs.insert(bs.end(), g_sel, g_sel + N_OPT); bs.insert(bs.end(), g_csel, g_csel + N_CHEAT);
+            { static bool was[24 + N_OPT + bindings::count*4 + 1]; static POINT lastp; int i = 0; POINT cp; GetCursorPos(&cp); bool moved = cp.x != lastp.x || cp.y != lastp.y; lastp = cp;   /* hover dos botoes: so redesenha quando muda */
+              std::vector<HWND> bs = {g_bpick, g_play, g_bstop, g_blogs, g_bsaves, g_bmoddir, g_bmodall, g_btex}; bs.insert(bs.end(), g_qsel, g_qsel + NQ); bs.insert(bs.end(), g_sel, g_sel + N_OPT); bs.insert(bs.end(), g_csel, g_csel + N_CHEAT); for(auto &row:g_bind) for(HWND b:row) if(b) bs.push_back(b); bs.push_back(g_reset);
               for (HWND b : bs) { bool hot = is_hot(b); if (hot != was[i] || (hot && moved && i >= 7)) { was[i] = hot; InvalidateRect(b, nullptr, FALSE); } i++; } }
             { static bool wasrun; bool run = game_running(); if (run != wasrun) { wasrun = run; refresh(); } }
             if (g_installing) { RECT bar; GetClientRect(h, &bar); InvalidateRect(h, &bar, FALSE); }
@@ -728,6 +902,9 @@ std::string launcher_pick_iso(std::wstring *data) {
       for (int k = 0; k < NQ; k++) g_qsel[k] = btn(kOpts[kQuick[k]].names[g_cur[kQuick[k]]], ID_QOPT0 + k, rx, S(220) + S(26) + S(30) + S(24) + k * S(68), w, S(36)); }
     cheat_load();
     for (int i = 0; i < N_CHEAT; i++) g_csel[i] = btn(kCheat[i].names[g_cc[i]], ID_COPT0 + i, cx + cw - S(270), S(100) + i * S(56) + S(4), S(270), S(34));
+    for(int i=0;i<bindings::count;i++) for(int j : {0,3}) g_bind[i][j]=btn(L"",600+i*4+j,cx+S(j==0?200:510),S(114+i*32),S(290),S(28));
+    g_reset=btn(L"Restore defaults",660,cx,S(598),S(180),S(32));
+    binding_text();
     g_bpick = btn(L"Select ISO...", ID_PICK, cx, S(220), S(180), S(36));
     g_blogs = btn(L"Open logs folder", ID_LOGS, cx, S(326), S(180), S(36));
     g_bsaves = btn(L"Open saves folder", ID_SAVES, cx + S(192), S(326), S(180), S(36));
@@ -748,6 +925,13 @@ std::string launcher_pick_iso(std::wstring *data) {
 
     MSG msg;
     while (GetMessageW(&msg, nullptr, 0, 0) > 0) {
+        if(g_capture>=0 && (msg.message==WM_KEYDOWN || msg.message==WM_SYSKEYDOWN)) {
+            int vk=(int)msg.wParam;
+            if(vk==VK_ESCAPE) { g_capture=-1; binding_text(); }
+            else if(vk==VK_DELETE) binding_save(g_capture/4,g_capture%4,0);
+            else if(g_capture%4!=3 && !hotkey_reserved(vk) && !(vk>=VK_F1 && vk<=VK_F12) && vk!=VK_MENU && !(GetAsyncKeyState(VK_MENU)&0x8000)) binding_save(g_capture/4,g_capture%4,vk);
+            continue;
+        }
         if (!IsDialogMessageW(g_wnd, &msg)) { TranslateMessage(&msg); DispatchMessageW(&msg); }
     }
     if (g_thr.joinable()) g_thr.join();

@@ -11,12 +11,13 @@ mkdir -p $PKG
 python tools/build/spv2h.py   # Vulkan shaders (GLSL -> SPIR-V, gen/gpu_spv.h)
 echo '1 24 "runtime/app.manifest"' > gen/pkg/app.rc
 [ -f runtime/app.ico ] && echo '1 ICON "runtime/app.ico"' >> gen/pkg/app.rc
+echo '201 RCDATA "assets/ui/xbox-controller.png"' >> gen/pkg/app.rc
 windres gen/pkg/app.rc -O coff -o gen/pkg/app_res.o
 CPPSRCS=$(ls runtime/*/*.cpp decomp/decomp.cpp decomp/*/*.cpp)   # every runtime and decomp source (tools/package_release.py builds the same set)
 # incremental: each .cpp becomes a .o in gen/pkg/obj (tools/build/cc_one.sh, in parallel); only what changed (source or a header listed in the .d) is rebuilt
 OD=gen/pkg/obj; mkdir -p $OD
 GAMEID=ULES-00600
-APPVER=${APPVER:-$(sed -n 's/^## \[\([0-9][0-9.]*\)\].*//p' CHANGELOG.md | head -1)}   # newest CHANGELOG entry = version the launcher update check compares against
+APPVER=${APPVER:-$(sed -n 's/^## \[\([0-9][0-9.]*\)\].*/\1/p' CHANGELOG.md | head -1)}   # newest CHANGELOG entry = version the launcher update check compares against
 STAMP="${OPT:--O2} $GAMEID $APPVER"
 [ "$(cat $OD/flags.txt 2>/dev/null)" = "$STAMP" ] || { rm -f $OD/*.o $OD/*.d; echo "$STAMP" > $OD/flags.txt; }
 export CXXOPT="${OPT:--O2}" GAMEID APPVER
@@ -32,7 +33,7 @@ for s in $CPPSRCS; do
 done
 if [ -n "$TODO" ]; then printf '%s\n' $TODO | tr ':' ' ' | xargs -P ${JOBS:-$(nproc)} -L1 sh tools/build/cc_one.sh; fi
 EXE="${OUT:-$PKG/TagForceRecomp.exe}"
-g++ -o "$EXE" $CPPOBJS gen/pkg/app_res.o -static -mwindows -lwinhttp -ldwmapi -lgdi32 -luser32 -lcomdlg32 -lshell32 -lwinmm -lsynchronization -ld3d11 -ldxgi -ld3dcompiler -lole32 -loleaut32 -luuid -lwindowscodecs -lgdiplus
+g++ -o "$EXE" $CPPOBJS gen/pkg/app_res.o -static -mwindows -lwinhttp -ldwmapi -lgdi32 -luser32 -lcomdlg32 -lshell32 -lwinmm -ldinput8 -ldxguid -lsynchronization -ld3d11 -ldxgi -ld3dcompiler -lole32 -loleaut32 -luuid -lwindowscodecs -lgdiplus
 if [ -z "$OUT" ]; then
   [ -d $PKG/tcc ] || python tools/package_release.py --no-build --version dev --out gen/pkg   # first time: tcc, tools/python, DLLs, mods, docs
   cp $PKG/TagForceRecomp.exe $PKG/TagForceRecomp_bg.exe 2>/dev/null || echo "note: TagForceRecomp_bg.exe is in use (a replay is running?): replays keep the previous build"

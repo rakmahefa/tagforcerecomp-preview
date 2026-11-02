@@ -1,3 +1,4 @@
+#include "input_bindings.h"
 /* Janela Win32 que mostra o framebuffer do PSP (480x272, ampliado 2x). Chamada a cada vblank pelo agendador. */
 #include <mutex>
 #include <condition_variable>
@@ -1042,11 +1043,11 @@ static uint32_t read_pad(void) {
         const char *dlls[] = {"xinput1_4.dll", "xinput1_3.dll", "xinput9_1_0.dll"};
         for (const char *d : dlls) if (HMODULE m = LoadLibraryA(d)) { get = (XGetState)(void *)GetProcAddress(m, "XInputGetState"); if (get) break; }
     }
-    if (!get) return 0;
+
     /* XInputGetState numa porta sem controle e lenta (ate ~1 ms): portas vazias so sao consultadas de novo a cada ~2 s */
     static uint64_t retry[4];
     uint32_t b = 0; bool achou = false; int ry_max = 0;
-    for (DWORD i = 0; i < 4; i++) {
+    for (DWORD i = 0; get && i < 4; i++) {
         if (g_frames < retry[i]) { continue; }
         XState s = {}; if (get(i, &s) != 0) { retry[i] = g_frames + 120; continue; }
         achou = true;
@@ -1055,28 +1056,17 @@ static uint32_t read_pad(void) {
         {   /* marcas rapidas (sem caixa de nota): L3 = grafico, R3 = performance, Start + Select = audio (F8 segue sendo a marca detalhada, com nota) */
           static bool l3, r3, ss; const bool bl = (x & 0x0040) != 0, br = (x & 0x0080) != 0, bs = (x & 0x0030) == 0x0030;
           if (bl && !l3) marca_rapida(1); if (br && !r3) marca_rapida(2); if (bs && !ss) marca_rapida(3); l3 = bl; r3 = br; ss = bs; }
-        if (x & 0x0001) b |= 0x10;   /* cima */
-        if (x & 0x0002) b |= 0x40;   /* baixo */
-        if (x & 0x0004) b |= 0x80;   /* esquerda */
-        if (x & 0x0008) b |= 0x20;   /* direita */
-        if (x & 0x0010) b |= 0x8;    /* Start */
-        if (x & 0x0020) b |= 0x1;    /* Back = Select */
-        if (x & 0x0100) b |= 0x100;  /* LB = L */
-        if (x & 0x0200) b |= 0x200;  /* RB = R */
-        if (x & 0x1000) b |= 0x4000; /* A = X(cross) */
-        if (x & 0x2000) b |= 0x2000; /* B = O */
-        if (x & 0x4000) b |= 0x8000; /* X = quadrado */
-        if (x & 0x8000) b |= 0x1000; /* Y = triangulo */
+        b |= bindings::gamepad(x | (s.pad.lt > 100 ? 0x10000 : 0) | (s.pad.rt > 100 ? 0x20000 : 0));
         const int dz = 16000;
         if (s.pad.ly > dz) b |= 0x10;
         if (s.pad.ly < -dz) b |= 0x40;
         if (s.pad.lx < -dz) b |= 0x80;
         if (s.pad.lx > dz) b |= 0x20;
         if (abs(s.pad.ry) > abs(ry_max)) ry_max = s.pad.ry;
-        if (s.pad.lt > 100) b |= 0x100;
-        if (s.pad.rt > 100) b |= 0x200;
     }
-    g_pad_connected = achou;
+    const auto generic = bindings::poll_generic(g_wnd);
+    b |= bindings::generic_gamepad(generic);
+    g_pad_connected = achou || generic.connected;
     g_pad_ry = ry_max;
     return b;
 }
@@ -1128,20 +1118,7 @@ uint32_t display_analog(void) { return ctl_active() ? ctl_analog() : (uint32_t)(
  * Z e X continuam valendo como X(cross) e O(circle). */
 static uint32_t read_keys_pc(void) {
     auto k = [](int vk) { return (GetAsyncKeyState(vk) & 0x8000) != 0; };
-    uint32_t b = 0;
-    if (k(VK_UP) || k('W')) b |= 0x10;
-    if (k(VK_RIGHT) || k('D')) b |= 0x20;
-    if (k(VK_DOWN) || k('S')) b |= 0x40;
-    if (k(VK_LEFT) || k('A')) b |= 0x80;
-    if (k(VK_SPACE) || k('E') || k('Z')) b |= 0x4000;
-    if (k(VK_BACK) || k('X') || k('C')) b |= 0x2000;
-    if (k('F')) b |= 0x8000;
-    if (k('R')) b |= 0x1000;
-    if (k('Q')) b |= 0x100;
-    if (k(VK_TAB)) b |= 0x200;
-    if (k(VK_RETURN)) b |= 0x8;
-    if (k(VK_SHIFT)) b |= 0x2000;   /* Shift = correr (no campo o O/circle segurado) */
-    if (k(VK_CONTROL)) b |= 0x1;
+    uint32_t b = bindings::keyboard();
     POINT p; RECT cr; GetCursorPos(&p); GetClientRect(g_wnd, &cr);
     const bool in_client = ScreenToClient(g_wnd, &p) && PtInRect(&cr, p);   /* cliques so contam sobre a area do jogo (a barra de menu e as bordas ficam do Windows) */
     bool eat_cross = false; static bool l_prev; bool over_text = false;
