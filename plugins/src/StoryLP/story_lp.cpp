@@ -8,11 +8,14 @@
 
 static const TfModApi *A;
 static const uint32_t F_INICIO = 0x09eb14f4, F_AVISO = 0x09f62d88, JOG = 0x09f79cec, PASSO = 0xfac;
-static int g_lp = 4000, g_dentro;
+static int g_lp = 8000, g_dentro;
 
 static std::wstring cfg_path(void) { return std::wstring(A->mod_dir) + L"\\config.ini"; }
 static void cfg_load(void) {
     if (FILE *f = _wfopen(cfg_path().c_str(), L"r")) { int v; char l[64]; while (fgets(l, sizeof l, f)) if (sscanf(l, "lp=%d", &v) == 1 && v >= 100 && v <= 99999) g_lp = v; fclose(f); }
+    else if (FILE *w = _wfopen(cfg_path().c_str(), L"w")) {   /* first run: write an editable file with the default */
+        fprintf(w, "; Starting Life Points of story duels, both duelists (100..99999). The game's own value is 8000.\nlp=%d\n", g_lp); fclose(w);
+    }
     if (const char *e = getenv("TF_STORY_LP")) { const int v = atoi(e); if (v >= 100 && v <= 99999) g_lp = v; }
 }
 
