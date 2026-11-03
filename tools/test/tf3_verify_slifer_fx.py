@@ -9,6 +9,8 @@ Three isolated duels through tf3_lote.py; Slifer is poked into a field zone (it 
   tribute2 only 2 monsters: the hand menu offers no Summon / Set (the first X opens Show Details), nothing moves
   obelisk3 Obelisk the Tormentor: 3 Tributes as tribute3
   ra3      The Winged Dragon of Ra: 3 Tributes (Sangan 1000 / 600 each) -> ATK 3000 DEF 1800
+  obelisk  Obelisk's own TF1 record (like 4998): Activate, Tribute 2 -> the opponent's monsters leave their zones. Smoke test only: poked monsters
+           end up on your side (the poke artifact of Change of Heart); the real check was done by hand on turn 3 against a CPU monster.
 Run (no -I): TF_TEST_EXE=<package exe> TF_TEST_DATA=<game data> python tools/test/tf3_verify_slifer_fx.py [case ...]
 """
 import glob
@@ -44,6 +46,9 @@ CASES = {
     'set3': dict(card=4999, env={'TF3_DEBUG_SLIFER': '1'}, rot=T1 + 'DOWN w30 ' + PICKS, log=['god: third Tribute'], grave_n=3),
     'tribute2': dict(card=4999, env={}, rot=T1.replace(' ' + zone(SIDE0 + 40, 4054), '') + 'X w300 X w300 w300 estado:fim', log=[], grave_n=0, hand_same=True),
     'obelisk3': dict(card=4998, env={'TF3_DEBUG_SLIFER': '1'}, rot=T1 + PICKS, log=['god: third Tribute'], grave_n=3),
+    'obelisk': dict(card=4844, env={}, rot='w300 ' + zone(SIDE0, 7024) + ' ' + zone(SIDE0 + 20, 4041) + ' ' + zone(SIDE0 + 40, 4041) + ' ' +
+                    zone(SIDE1, 4007) + ' ' + zone(SIDE1 + 20, 4007) + ' w30 estado:ini UP w40 LEFT w30 LEFT w30 LEFT w30 LEFT w30 LEFT w40 X w100 X w300 X w200 X w300 X w300 w1200 estado:fim',
+                    log=[], grave_n=2, op_empty=True),
     'ra3': dict(card=5000, env={'TF3_DEBUG_SLIFER': '1'}, rot=T1 + PICKS, log=['god: third Tribute', 'gets ATK 3000 DEF 1800'], grave_n=3),
 }
 
@@ -60,6 +65,8 @@ def run(name, case):
         ok = ok and len(state['fim']['me']['grave']) > len(state['ini']['me']['grave'])
     if 'grave_n' in case:
         ok = ok and len(state['fim']['me']['grave']) - len(state['ini']['me']['grave']) == case['grave_n']
+    if case.get('op_empty'):
+        ok = ok and not state['fim']['op']['field'] and len(state['ini']['op']['field']) == 2
     if case.get('hand_same'):
         ok = ok and state['fim']['me']['n_hand'] == state['ini']['me']['n_hand']
     if case.get('grave_has'):

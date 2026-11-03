@@ -16,6 +16,7 @@ Usage:  python tools/test/tf3_lote.py [-j 8, never above 8: 10 pinned the CPU at
   --rapido     experimental fast mode (no screenshots): the duel is not the same as in full mode and the waits drift, so the script may not reach turn 3
   --check      python expression over the states ini and fim (attributes: me / op -> lp, deck, hand, n_hand, field); repeatable
                e.g. "fim.op.lp < ini.op.lp"  "fim.me.deck == ini.me.deck - 1"  "fim.me.n_hand > ini.me.n_hand"
+TF3_LOTE_FORCE=id,id,...: force these cards (3 copies each, in order) instead of ID alone; ID still names the folders.
 Notes: the deck stack at the top left of the screen is the OPPONENT's; `me` is player 0.
 """
 import json
@@ -171,7 +172,7 @@ def um(cid, mods, extra, rot, spec, checks, shots, grave=None, mao=None):
         rot = rot.replace('estado:ini', poke_cemiterio(cid, mods, spec, grave) + 'estado:ini', 1)
     if spec:
         mods = pacote_do_caso(cid, mods, spec)
-    env = dict(os.environ, TF_TAG=tag, TF3_FORCE_CARDS=str(cid), TF3_FORCE_COPIES='3', TF3_FORCE_DECK='0', TF_MODS_FROM=mods, TF_RNG_SEED='1', **extra)   # fixed shuffle (CPUvsCPU plugin in the mods folder, switched off): the same duel every time
+    env = dict(os.environ, TF_TAG=tag, TF3_FORCE_CARDS=os.environ.get('TF3_LOTE_FORCE', str(cid)), TF3_FORCE_COPIES='3', TF3_FORCE_DECK='0', TF_MODS_FROM=mods, TF_RNG_SEED='1', **extra)   # fixed shuffle (CPUvsCPU plugin in the mods folder, switched off): the same duel every time
     out = os.path.join(ROOT, 'gen', 'lote', str(cid)); shutil.rmtree(out, ignore_errors=True); os.makedirs(out, exist_ok=True)
     estados = {}
     with open(os.path.join(out, 'saida.txt'), 'w') as f:
