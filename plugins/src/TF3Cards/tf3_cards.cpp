@@ -949,6 +949,19 @@ static int hk_attack_trigger(TfCpu *c) {   /* 09ed5870(effect object): the "oppo
     return 1;
 }
 
+/* Card-class predicates of BOOT (libehsys exports) that take a card id in a0 and answer from a chain of `id == N`, e.g. 0884e3fc = "a monster whose effect
+ * is activated from the hand" (King of the Swamp 6044, ...: without it the hand menu offers no Activate). A new card answers as the card it plays like. */
+template <uint32_t F> static int hk_id_alias(TfCpu *c) {
+    const uint32_t id = A->reg(c, 4) & 0x1fff;
+    for (const auto &a : PORTED) {
+        if (id != a.slot || !a.like) continue;
+        A->set_reg(c, 4, a.like);
+        A->call_original(c, F);
+        return 1;
+    }
+    return 0;
+}
+
 static int hk_effect_record(TfCpu *c) {   /* looks the record up as the card it plays like, then puts the key back */
     const uint32_t p = A->reg(c, 4);
     if (p < 0x08000000u || p > 0x0a000000u - 8) return 0;
@@ -2101,6 +2114,7 @@ extern "C" __declspec(dllexport) int tfmod_init(const TfModApi *api) {
     const auto on = [&](char k) { return !(off && strchr(off, k)); };
     if (on('d')) { A->hook(F_READ_DECK, hk_read_deck); A->hook(F_PREPARE_DUEL, hk_prepare_duel); }
     if (on('r')) A->hook(F_EFFECT_RECORD, hk_effect_record);
+    if (on('r')) A->hook(0x0884e3fc, hk_id_alias<0x0884e3fc>);
     if (on('f')) A->hook(F_FRAME, hk_frame);
     if (on('c')) A->hook(F_COLLECTION_ENTRY, hk_collection_entry);
     A->hook(F_DUEL_START, hk_duel_start);
