@@ -31,3 +31,5 @@ liblimitlist	08EEB400	USRDIR/gmodule/liblimitlist.prx	liblimitlist
 librecipe_viewer	08EEB400	USRDIR/gmodule/librecipe_viewer.prx	librecipe_viewer
 libtutoriallist	08EEB400	USRDIR/gmodule/libtutoriallist.prx	libtutoriallist
 libtutorial	09F7E200	USRDIR/gmodule/libtutorial.prx	libtutorial
+# variante: a troca de deck entre as partidas de um Match (Free Duel) e carregada COM o libduel_mgr ainda na 08EFCA00
+libdeck_swap	09F7E200	USRDIR/gmodule/libdeck_swap.prx	libdeck_swap

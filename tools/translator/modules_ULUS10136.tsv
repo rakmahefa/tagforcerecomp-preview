@@ -35,3 +35,4 @@ libtutoriallist	08EEB400	USRDIR/gmodule/libtutoriallist.prx	libtutoriallist
 libcutin_viewer	08EFCA00	USRDIR/gmodule/libcutin_viewer.prx	libcutin_viewer
 libmovie_viewer	08EFCA00	USRDIR/gmodule/libmovie_viewer.prx	libmovie_viewer
 libsdchr_viewer	08EFCA00	USRDIR/gmodule/libsdchr_viewer.prx	libsdchr_viewer
+libdeck_swap	09F7E200	USRDIR/gmodule/libdeck_swap.prx	libdeck_swap
