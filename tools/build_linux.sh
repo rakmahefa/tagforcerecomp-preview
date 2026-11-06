@@ -59,22 +59,42 @@ fi
 # ------------------------------------------------------------------ TinyCC (libtcc.so, LGPL)
 # The JIT loads libtcc.so beside the game at run time (never linked into it). The distributions
 # package a static libtcc.a only, so the shared library is built from the official source once.
+# A libtcc.so from anywhere but the official 0.9.27 (the version the Windows release uses) is
+# NEVER bundled: Arch ships a 0.9.28rc whose generated code this game was never verified with
+# (a first real boot crashed inside the recompiled BOOT with it), and whose libtcc1.a - which
+# every module link needs - hides in /usr/lib/tcc, so it was not even bundled (the player had to
+# symlink it by hand). A stale gen/linux/tcc from an older build of this script is rebuilt.
+tcc_ver() { strings -a "$1" 2>/dev/null | grep -m1 -oE '0\.9\.[0-9]+'; }
+tcc_ok() { [ -f "$1/libtcc.so" ] && [ "$(tcc_ver "$1/libtcc.so")" = "0.9.27" ] && { [ -f "$1/libtcc1.a" ] || [ -f "$1/tcc/libtcc1.a" ]; }; }
 TCCDIR=""
-for d in "${TF_TCC:-}" gen/linux/tcc "$S/usr/lib" /usr/lib/x86_64-linux-gnu /usr/lib64 /usr/local/lib; do
-    if [ -n "$d" ] && [ -f "$d/libtcc.so" ]; then TCCDIR="$d"; break; fi
-done
-if [ -z "$TCCDIR" ]; then
-    sh tools/build_tcc_linux.sh gen/linux/tcc
-    TCCDIR=gen/linux/tcc
+if [ -n "$TF_TCC" ] && [ -f "$TF_TCC/libtcc.so" ]; then
+    TCCDIR="$TF_TCC"   # explicit developer override: taken exactly as given
+else
+    if tcc_ok gen/linux/tcc; then
+        TCCDIR=gen/linux/tcc
+    else
+        [ -d gen/linux/tcc ] && echo "TinyCC: the cached gen/linux/tcc is not the tested 0.9.27 with its libtcc1.a; building the official source again"
+        rm -rf gen/linux/tcc
+        for d in "$S/usr/lib" /usr/lib/x86_64-linux-gnu /usr/lib64 /usr/local/lib; do
+            [ -f "$d/libtcc.so" ] || continue
+            if tcc_ok "$d"; then TCCDIR="$d"; break; fi
+            echo "TinyCC: the system libtcc.so in $d is $(tcc_ver "$d/libtcc.so") (or its libtcc1.a is not beside it); not the tested 0.9.27, building the official source instead"
+        done
+        [ -n "$TCCDIR" ] || { sh tools/build_tcc_linux.sh gen/linux/tcc; TCCDIR=gen/linux/tcc; }
+    fi
 fi
 if [ "$TCCDIR" != "gen/linux/tcc" ]; then
     mkdir -p gen/linux/tcc
     cp -L "$TCCDIR"/libtcc.so* gen/linux/tcc/
-    if [ -f "$TCCDIR/libtcc1.a" ]; then cp -u "$TCCDIR/libtcc1.a" gen/linux/tcc/; fi
+    for t1 in "$TCCDIR/libtcc1.a" "$TCCDIR/tcc/libtcc1.a"; do
+        [ -f "$t1" ] && { cp -u "$t1" gen/linux/tcc/; break; }
+    done
     TCCINC=""
     if [ -d "$TCCDIR/include" ]; then TCCINC="$TCCDIR/include"; elif [ -d "$TCCDIR/tcc/include" ]; then TCCINC="$TCCDIR/tcc/include"; fi
     if [ -n "$TCCINC" ]; then mkdir -p gen/linux/tcc/include; cp -ru "$TCCINC/." gen/linux/tcc/include/; fi
 fi
+# what the JIT actually loads: without libtcc1.a no module links and the game cannot start
+[ -f gen/linux/tcc/libtcc1.a ] || { echo "build_linux.sh: gen/linux/tcc/libtcc1.a is missing (TinyCC's helper library; every module link needs it)" 1>&2; exit 1; }
 
 # the one header the generated code includes, where the JIT looks for it
 mkdir -p gen/linux/include
@@ -132,7 +152,9 @@ fi
 
 EXE="${OUT:-gen/linux/TagForceRecomp}"
 mkdir -p "$(dirname "$EXE")"
-g++ -o "$EXE" $OD/*.o $LIBS -Wl,-rpath,'$ORIGIN' $RPATHS
+# -rdynamic: the crash report names the native function a RIP landed in (dladdr/backtrace need
+# the exe's symbols in .dynsym; the JIT'd code, linked by TinyCC with explicit symbols, is unaffected)
+g++ -o "$EXE" $OD/*.o $LIBS -Wl,-rpath,'$ORIGIN' $RPATHS -rdynamic
 
 if [ -z "$OUT" ]; then
   # the repository root is also a ready-to-run install, like the Windows build (tools/build.sh):

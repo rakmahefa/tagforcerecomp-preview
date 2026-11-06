@@ -27,6 +27,8 @@ static HANDLE g_console = INVALID_HANDLE_VALUE;
 static std::wstring g_dir, g_session;
 volatile uint64_t g_diag_frames;          /* atualizado pelo display a cada quadro */
 volatile int g_diag_paused;                /* >0 enquanto uma janela nativa (texto) espera o usuario */
+volatile int g_diag_game_on;               /* o escalonador comecou (k_run): antes disso (traducao, compilacao JIT de ~15 s) um quadro demorar nao e noticia */
+void diag_game_on(void) { g_diag_game_on = 1; }
 
 static DWORD WINAPI tee_thread(void *h) {
     char buf[4096]; DWORD n;
@@ -54,6 +56,7 @@ static DWORD WINAPI watchdog_thread(void *) {
     uint64_t last = g_diag_frames; DWORD since = GetTickCount(); bool reported = false;
     for (;;) {
         Sleep(500);
+        if (!g_diag_game_on) { last = g_diag_frames; since = GetTickCount(); reported = false; continue; }   /* ainda comecando: traduz/compila/carrega */
         uint64_t f = g_diag_frames;
         if (f != last || g_diag_paused) { last = f; since = GetTickCount(); reported = false; continue; }
         if (!reported && GetTickCount() - since > 5000) {

@@ -173,6 +173,7 @@ uint32_t k_start_root(uint32_t entry, uint32_t gp, uint32_t arglen, uint32_t arg
 
 /* Executa ate nao restar thread viva. Devolve 0. */
 int k_run(void) {
+    { extern void diag_game_on(void); diag_game_on(); }   /* o watchdog so conta falta de quadros daqui em diante (antes: compilacao do JIT) */
     for (;;) {
         savestate_service();   /* a state save/load asked for by the player (savestate.cpp): between two thread slices every PSP thread is parked at a system call */
         Thread *best = nullptr;
