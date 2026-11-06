@@ -16,21 +16,32 @@ OUT="${1:-gen/linux/tcc}"
 VER=0.9.27
 SRC="${TF_TCC_SRC:-gen/tcc-$VER}"
 TARBALL="gen/tcc-$VER.tar.bz2"
+MIRROR="gen/tcc-$VER-mirror.tar.gz"
 URL="https://download.savannah.gnu.org/releases/tinycc/tcc-$VER.tar.bz2"
+URLM="https://github.com/TinyCC/tinycc/archive/refs/tags/release_0_9_27.tar.gz"
+
+fetch() {   # fetch <url> <output>: curl or wget, whichever is installed
+    if command -v curl >/dev/null 2>&1; then curl -fSL --retry 2 -o "$2" "$1"
+    elif command -v wget >/dev/null 2>&1; then wget -q -O "$2" "$1"
+    else echo "build_tcc_linux.sh: need curl or wget to fetch the TinyCC source (or point TF_TCC_SRC at an existing tree)" 1>&2; return 1; fi
+}
 
 if [ ! -f "$SRC/configure" ]; then
-    if [ ! -f "$TARBALL" ]; then
+    if [ ! -f "$TARBALL" ] && [ ! -f "$MIRROR" ]; then
         echo "TinyCC: fetching the $VER source ($URL)"
         mkdir -p gen
-        if command -v curl >/dev/null 2>&1; then curl -fSL -o "$TARBALL" "$URL"
-        elif command -v wget >/dev/null 2>&1; then wget -q -O "$TARBALL" "$URL"
-        else echo "build_tcc_linux.sh: need curl or wget to fetch the TinyCC source (or point TF_TCC_SRC at an existing tree)" 1>&2; exit 1; fi
+        fetch "$URL" "$TARBALL" || {
+            rm -f "$TARBALL"
+            echo "TinyCC: savannah did not answer; trying the GitHub mirror of the same release"
+            fetch "$URLM" "$MIRROR" || { rm -f "$MIRROR"; echo "build_tcc_linux.sh: could not fetch the TinyCC source" 1>&2; exit 1; }
+        }
     fi
     rm -rf "$SRC" gen/.tcc-extract
     mkdir -p gen/.tcc-extract
-    tar -xjf "$TARBALL" -C gen/.tcc-extract
+    if [ -f "$TARBALL" ]; then tar -xjf "$TARBALL" -C gen/.tcc-extract; else tar -xzf "$MIRROR" -C gen/.tcc-extract; fi
     mv gen/.tcc-extract/* "$SRC"
     rmdir gen/.tcc-extract
+    [ "$(cat "$SRC/VERSION" 2>/dev/null)" = "$VER" ] || { echo "build_tcc_linux.sh: the extracted source is not TinyCC $VER" 1>&2; exit 1; }
 fi
 
 echo "TinyCC: building libtcc.so in $SRC (once)"
