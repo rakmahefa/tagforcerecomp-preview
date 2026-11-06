@@ -53,3 +53,6 @@ texturas_despejo/
 # Yugi mod: work in progress, kept local only
 /plugins/src/Yugi/
 /tools/mods/mod_yugi_portrait.py
+
+# Linux launcher: Dear ImGui fetched at build time (tools/launcher/build.sh)
+/tools/launcher/deps/
