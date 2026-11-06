@@ -103,6 +103,10 @@ Esc: leave fullscreen / asks before closing. The launcher's **Game** page lists 
 Saves live in `ms0/` next to the executable. Each run writes a log, the key presses and a copy of the save to `logs/`; any session can be
 replayed with `tools/test/replay.sh` (developers). `tools/test/tf.py` plays the game by itself (buttons, screenshots, memory peek) for automated tests.
 
+## Linux (launcher preview)
+
+There is now a **Linux release** in the making, built around the same idea as the DQ8Recomp launcher: one download with an executable (`tagforce-launcher`) and a `payload/` folder, five pages - **Your disc, Tools, Options, Build, Play** - and nothing from the game inside. In this preview the launcher recognises the disc, checks the tools and prepares the game files and the translated code; the runtime itself still builds only on Windows. See [`docs/LINUX.md`](docs/LINUX.md) for what works, the screenshots of every page, and the developer build.
+
 ## Build from source (developers)
 
 Requirements: Windows 10/11, [MSYS2](https://www.msys2.org/) UCRT64 (`gcc`, `g++`, `windres`, `glslc`, FFmpeg and Vulkan headers),

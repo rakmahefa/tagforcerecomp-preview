@@ -4,6 +4,9 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
 
 ## [Unreleased]
 
+### Added
+- **Linux launcher** (`tools/launcher/`): an SDL2 + Dear ImGui window in the style of the DQ8Recomp launcher, with the pages **Your disc, Tools, Options, Build, Play**. It recognises the European disc (ULES-00600) from the ISO itself, checks g++/CMake/Ninja/Python/FFmpeg, copies the game files and translates the game's code through the same Python tools as the Windows release, and stops honestly at compiling the runtime, which is still Windows-only. `tools/launcher/package_linux.py` builds the Linux release - an executable plus a `payload/` folder with the source - as a tar.gz, with SDL2 bundled; `.github/workflows/linux-launcher.yml` builds, tests (synthetic disc, smoke test, screenshots of every page) and publishes it as a prerelease on pushes to master. See `docs/LINUX.md`.
+
 ## [0.6.0] - 2026-11-02
 
 ### Added
