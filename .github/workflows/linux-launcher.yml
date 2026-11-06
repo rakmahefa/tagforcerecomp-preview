@@ -83,9 +83,8 @@ jobs:
       - uses: actions/upload-artifact@v4
         with:
           name: linux-launcher
-          path: |
-            gen/linux/*.tar.gz
-            shots/
+          # only the release tarball: the shots/ PNGs are a test artefact, checked above
+          path: gen/linux/*.tar.gz
           retention-days: 14
           compression-level: 0
 
@@ -116,5 +115,5 @@ jobs:
             gh release create "linux-$version" TagForceRecomp-*.tar.gz SHA256SUMS.txt \
               --target "$GITHUB_SHA" --prerelease \
               --title "Linux launcher $version" \
-              --notes "The Linux launcher and its payload, built from $version. See docs/LINUX.md in the repository: extract, run ./tagforce-launcher, drop your disc image (ULES-00600) on the window. Prerelease: the Windows runtime does not build on Linux yet; the launcher prepares the game files and the translated code."
+              --notes "The Linux launcher and its payload, built from $version. See docs/LINUX.md in the repository: extract, run ./tagforce-launcher, drop your disc image (ULES-00600) on the window. The Build page then compiles the game on your machine - the Tools page lists the packages your distribution needs - and Play runs it."
           fi
