@@ -94,6 +94,52 @@ static void drop_stale(const std::wstring &dir, const std::string &mod, const st
     } while (FindNextFileW(h, &fd));
     FindClose(h);
 }
+#ifdef __linux__
+#include <sys/statvfs.h>
+/* The stock TinyCC 0.9.27 that build_tcc_linux.sh ships never checks fwrite/fclose in
+ * tcc_output_file: a full disk still "succeeds" and leaves an empty or truncated object,
+ * which the following start rejects ("unrecognized file type") before recompiling all
+ * ~30 modules again - and again, every start. Check what was actually written (an ELF
+ * relocatable: magic, 32/64-bit class, e_type ET_REL) and say how much space is left. */
+static bool jit_obj_ok(const std::wstring &path) {
+    FILE *f = _wfopen(path.c_str(), L"rb"); if (!f) return false;
+    unsigned char h[18];
+    bool ok = fread(h, 1, sizeof h, f) == sizeof h && h[0] == 0x7f && h[1] == 'E' && h[2] == 'L' && h[3] == 'F' && h[4] >= 1 && h[4] <= 2 && h[16] == 1 && h[17] == 0;
+    fclose(f); return ok;
+}
+static std::string jit_cache_reason(const std::wstring &cache) {
+    struct statvfs v; char b[128];
+    if (statvfs(tcc_path(cache).c_str(), &v) != 0) return " (objeto vazio ou truncado apos a escrita)";
+    snprintf(b, sizeof b, " (objeto vazio ou truncado apos a escrita; %llu MB livres no disco)", (unsigned long long)v.f_bavail * v.f_frsize >> 20);
+    return b;
+}
+static void tcc_error_quiet(void *, const char *) {}
+/* After the 0.9.27 release TinyCC renumbered the TCC_OUTPUT_* constants (OBJ moved from 4 to 3,
+ * and 4 became DLL): with a 0.9.28rc libtcc, every cached object was written as a linked shared
+ * library and the next start rejected it ("unrecognized file type", all modules, every start).
+ * Do not hardcode the value: ask the library itself which one writes a relocatable object
+ * (ELF, e_type ET_REL) - 3 on current master, 4 on 0.9.27. */
+static int jit_tcc_objtype(const std::wstring &cache) {
+    for (int t = 3; t <= 5; t++) {
+        TCCState *s = T.nw();
+        if (!s) return 0;
+        T.errf(s, nullptr, tcc_error_quiet);
+        T.opts(s, "-w -nostdinc");
+        T.otype(s, t);
+        bool rel = false;
+        if (T.cstr(s, "int jit_probe;\n") >= 0) {
+            const std::wstring tmp = cache + L"probe_" + std::to_wstring(GetCurrentProcessId()) + L".tmp";
+            if (T.outfile(s, tcc_path(tmp).c_str()) >= 0) { rel = jit_obj_ok(tmp); DeleteFileW(tmp.c_str()); }
+        }
+        T.del(s);
+        if (rel) return t;
+    }
+    return 0;
+}
+#else
+static bool jit_obj_ok(const std::wstring &) { return true; }   /* the Windows bundle's TinyCC writes COFF objects, not ELF */
+static std::string jit_cache_reason(const std::wstring &) { return ""; }
+#endif
 bool jit_init(void) {
     std::wstring tccdir = exe_dir() + L"tcc" TF_SEP, gen = code_dir(game_id_built());   /* TinyCC's libtcc (libtcc.so on Linux), include/ and lib/ in tcc/; the translated modules in gen/ */
     if (const wchar_t *d = _wgetenv(L"TF_JIT_TCC")) tccdir = d;
@@ -111,7 +157,7 @@ bool jit_init(void) {
      * compile again. Any cache failure (path TinyCC cannot open, disk full) falls back to compiling in memory. TF_JIT_NOCACHE=1 skips the cache. */
     const bool trace = !getenv("TF_JIT_NOTRACE"), ftrace = getenv("TF_JIT_FTRACE") != nullptr;   /* no TRC function trace / TF_FTRACE bisection hooks */
     const std::wstring cache = gen + L"jitcache" TF_SEP;
-    const bool use_cache = !getenv("TF_JIT_NOCACHE") && tcc_path(cache).find('?') == std::string::npos;   /* '?': the path has characters TinyCC cannot open */
+    bool use_cache = !getenv("TF_JIT_NOCACHE") && tcc_path(cache).find('?') == std::string::npos;   /* '?': the path has characters TinyCC cannot open */
     uint64_t seed = (trace ? 1 : 0) | (ftrace ? 2 : 0);
     { const char *i = getenv("TF_JIT_INC"); const std::string h = read_all((i ? to_wide(i) : exe_dir() + L"include") + TF_SEP L"psp_rt.h"); seed = xxh64(h.data(), h.size(), seed);
 #ifdef __linux__
@@ -120,6 +166,20 @@ bool jit_init(void) {
       WIN32_FILE_ATTRIBUTE_DATA a; if (GetFileAttributesExW((tccdir + L"libtcc.dll").c_str(), GetFileExInfoStandard, &a)) seed ^= ((uint64_t)a.nFileSizeHigh << 32 | a.nFileSizeLow) * 0x9E3779B97F4A7C15ull; }
 #endif
     if (use_cache) CreateDirectoryW(cache.c_str(), nullptr);
+    int objtype = 4;   /* TCC_OUTPUT_OBJ in 0.9.27 and in the Windows bundle's libtcc */
+#ifdef __linux__
+    if (use_cache) {   /* almost-full disk: writing the objects would be wasted work (each one is checked and thrown away); compile in memory right away */
+        struct statvfs v;
+        if (statvfs(tcc_path(cache).c_str(), &v) == 0 && (unsigned long long)v.f_bavail * v.f_frsize < (256ull << 20)) {
+            fprintf(stderr, "[jit] cache desativado: %llu MB livres no disco\n", (unsigned long long)v.f_bavail * v.f_frsize >> 20);
+            use_cache = false;
+        }
+    }
+    if (use_cache && !(objtype = jit_tcc_objtype(cache))) {
+        fprintf(stderr, "[jit] esta libtcc nao grava objetos relocaveis: cache desativado\n");
+        use_cache = false;
+    }
+#endif
     DWORD t0 = GetTickCount(); size_t pos = 0; int ok = 0, hits = 0;
     while (pos < man.size()) {
         size_t en = man.find('\n', pos); if (en == std::string::npos) en = man.size();
@@ -150,10 +210,11 @@ bool jit_init(void) {
             const std::wstring obj = cache + to_wide(c) + L"_" + to_wide(key) + L".o";
             if (GetFileAttributesW(obj.c_str()) == INVALID_FILE_ATTRIBUTES) {   /* miss: compile to a temporary object, then move it in place (parallel replays) */
                 const std::wstring tmp = obj + L"." + std::to_wstring(GetCurrentProcessId()) + L".tmp";
-                TCCState *o = setup(4);   /* 4 = TCC_OUTPUT_OBJ */
-                const bool built = T.cstr(o, src.c_str()) >= 0 && T.outfile(o, tcc_path(tmp).c_str()) >= 0;
+                TCCState *o = setup(objtype);   /* the probed TCC_OUTPUT_OBJ (4 in 0.9.27, 3 in 0.9.28rc) */
+                const bool written = T.cstr(o, src.c_str()) >= 0 && T.outfile(o, tcc_path(tmp).c_str()) >= 0;
+                const bool built = written && jit_obj_ok(tmp);
                 T.del(o);
-                if (!built) { DeleteFileW(tmp.c_str()); fprintf(stderr, "[jit] %s: cache nao gravado, compilando em memoria\n", c.c_str()); }
+                if (!built) { DeleteFileW(tmp.c_str()); fprintf(stderr, "[jit] %s: cache nao gravado%s, compilando em memoria\n", c.c_str(), written ? jit_cache_reason(cache).c_str() : ""); }
                 else if (MoveFileExW(tmp.c_str(), obj.c_str(), MOVEFILE_REPLACE_EXISTING)) drop_stale(cache, c, obj);
                 else DeleteFileW(tmp.c_str());
             } else hits++;

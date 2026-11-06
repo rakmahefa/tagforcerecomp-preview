@@ -157,32 +157,65 @@ void SetLastError(DWORD e) { g_lasterr = e; }
 static HANDLE hnew(tf_handle_s::K k) { tf_handle_s *h = new tf_handle_s; h->kind = k; return h; }
 
 /* ------------------------------------------------------------------ memory */
-LPVOID VirtualAlloc(LPVOID addr, SIZE_T size, DWORD type, DWORD protect) {
-    int prot = (type & MEM_COMMIT) ? (protect == PAGE_NOACCESS ? PROT_NONE : (PROT_READ | PROT_WRITE)) : PROT_NONE;
-    void *p = mmap(addr, size, prot, MAP_PRIVATE | MAP_ANONYMOUS | (addr ? 0 : 0), -1, 0);
-    if (p == MAP_FAILED) {
-        if (addr) {   /* Windows: a reservation is just address space; commit touches pages */
-            p = mmap(nullptr, size, PROT_NONE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
-            if (p == MAP_FAILED || addr != p) { if (p != MAP_FAILED) munmap(p, size); return nullptr; }
-        } else return nullptr;
+/* VirtualAlloc/VirtualFree: the runtime reserves big regions (the PSP's 1 GiB window,
+ * coroutine stacks, the ISO cache) and commits slices of them later, like on Windows.
+ * A Linux mmap() never overlays an existing mapping without MAP_FIXED, so a previous
+ * version treated the address as a "hint": every commit landed somewhere else, p != addr,
+ * and host_create() failed with "falha ao mapear memoria" on every start. Now a
+ * reservation is a PROT_NONE mapping and a commit inside it is an mprotect() on those
+ * pages. VirtualFree(base, 0, MEM_RELEASE) has no munmap() equivalent ("free the whole
+ * region"), so the reservations are remembered here with their size. */
+static std::mutex g_va_mu;
+static std::map<uint8_t *, size_t> g_va_regions;   /* reservation base -> bytes */
+static int va_prot(DWORD protect) {
+    if (protect == PAGE_NOACCESS) return PROT_NONE;
+    if (protect == PAGE_READONLY) return PROT_READ;
+    if (protect == PAGE_EXECUTE_READWRITE) return PROT_READ | PROT_WRITE | PROT_EXEC;
+    return PROT_READ | PROT_WRITE;
+}
+LPVOID VirtualAlloc(LPVOID address, SIZE_T size, DWORD type, DWORD protect) {
+    uint8_t *addr = (uint8_t *)address;
+    const int prot = va_prot(protect);
+    if (addr && !(type & MEM_RESERVE)) {   /* commit pages inside an existing reservation */
+        if (mprotect(addr, size, prot) != 0) return nullptr;
+        return addr;
     }
-    if (addr && p != addr) { munmap(p, size); return nullptr; }
-    if ((type & MEM_COMMIT) && addr) mprotect(addr, size, PROT_READ | PROT_WRITE);
+    int flags = MAP_PRIVATE | MAP_ANONYMOUS;
+    if (addr) {
+#ifdef MAP_FIXED_NOREPLACE
+        flags |= MAP_FIXED_NOREPLACE;   /* refuse instead of clobbering (kernel >= 4.17) */
+#else
+        flags |= MAP_FIXED;
+#endif
+    } else if (!(type & MEM_COMMIT)) {
+        flags |= MAP_NORESERVE;   /* a reservation is address space only, like on Windows */
+    }
+    void *p = mmap(addr, size, prot, flags, -1, 0);
+    if (p == MAP_FAILED) return nullptr;   /* EEXIST: the address is taken; VirtualAlloc fails too */
+    { std::lock_guard<std::mutex> lk(g_va_mu); g_va_regions[(uint8_t *)p] = size; }
     return p;
 }
-BOOL VirtualFree(LPVOID addr, SIZE_T size, DWORD type) {
-    if (type & MEM_RELEASE) return munmap(addr, size) == 0 ? TRUE : FALSE;
+BOOL VirtualFree(LPVOID address, SIZE_T size, DWORD type) {
+    uint8_t *addr = (uint8_t *)address;
     if (type & MEM_DECOMMIT) { mprotect(addr, size, PROT_NONE); madvise(addr, size, MADV_DONTNEED); return TRUE; }
+    if (type & MEM_RELEASE) {
+        size_t len = size;   /* Windows wants 0 here: the whole reservation, looked up by base */
+        { std::lock_guard<std::mutex> lk(g_va_mu);
+          auto it = g_va_regions.find(addr);
+          if (it != g_va_regions.end()) { if (!len) len = it->second; g_va_regions.erase(it); } }
+        if (!len) return FALSE;
+        return munmap(addr, len) == 0 ? TRUE : FALSE;
+    }
     return FALSE;
 }
 BOOL VirtualProtect(LPVOID addr, SIZE_T size, DWORD protect, DWORD *old) {
-    int p = protect == PAGE_NOACCESS ? PROT_NONE : (PROT_READ | (protect == PAGE_READONLY ? 0 : PROT_WRITE));
-    int o = 0;
+    int p = va_prot(protect);
     if (old) {   /* not tracked precisely: report the common RW */
         *old = PAGE_READWRITE;
-        (void)o;
     }
-    return mprotect(addr, size, p) == 0 ? TRUE : FALSE;
+    static const uintptr_t pg = sysconf(_SC_PAGESIZE) - 1;   /* Windows rounds to pages; mprotect requires them */
+    uintptr_t lo = (uintptr_t)addr & ~pg, hi = ((uintptr_t)addr + size + pg) & ~pg;
+    return mprotect((void *)lo, (size_t)(hi - lo), p) == 0 ? TRUE : FALSE;
 }
 
 /* ------------------------------------------------------------------ time */
