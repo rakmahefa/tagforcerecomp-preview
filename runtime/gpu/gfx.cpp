@@ -1,7 +1,9 @@
 #include "gfx.h"
 #include "raster_pool.h"
 #include "util.h"
+#ifdef _WIN32
 #include <dxgi.h>
+#endif
 #include <vector>
 #include <stdio.h>
 #include <stdlib.h>
@@ -17,7 +19,12 @@ static std::wstring ini_path() { return app_ini_path(); }
 int gfx_vram_mb(bool *integrated) {
     static int mb = -1; static bool integ;
     if (mb < 0) {
-        mb = 0; IDXGIFactory1 *fac = nullptr;
+        mb = 0;
+#ifdef __linux__
+        /* no DXGI on Linux: 0 lets "Match monitor" stay uncapped (the user can pick by hand) */
+        integ = false;
+#else
+        IDXGIFactory1 *fac = nullptr;
         if (SUCCEEDED(CreateDXGIFactory1(__uuidof(IDXGIFactory1), (void **)&fac))) {
             IDXGIAdapter1 *ad = nullptr; uint64_t best = 0, bestShared = 0;
             for (UINT i = 0; fac->EnumAdapters1(i, &ad) == S_OK; i++) {
@@ -28,6 +35,7 @@ int gfx_vram_mb(bool *integrated) {
             integ = best < (1024ull << 20);   /* integrated GPUs report only a small dedicated carve-out */
             mb = (int)((integ ? bestShared / 4 : best) >> 20);
         }
+#endif
     }
     if (integrated) *integrated = integ;
     return mb;

@@ -63,6 +63,11 @@ int64_t step(void) { return g_vb_lock ? g_vb_period * g_vb_k : nominal(); }
 void vsync_poll(void) {   /* relogio do monitor (DWM) a cada ~0,5 s; decide a sincronia */
     if (g_vb_poll++ % 30) return;
     static const bool off = getenv("TF_RITMO_SEM_FASE") != nullptr;
+#ifdef __linux__
+    (void)off;
+    if (g_vb_lock) { g_vb_lock = false; g_vb_k = 0; }   /* no DWM vblank clock on Linux: the nominal grid paces the frames */
+    return;
+#else
     DWM_TIMING_INFO ti = {}; ti.cbSize = sizeof ti;
     bool lock = false; int k = 0; double hz = 0;
     if (!off && g_lock_allow && SUCCEEDED(DwmGetCompositionTimingInfo(nullptr, &ti)) && ti.qpcRefreshPeriod > 0 && ti.rateRefresh.uiDenominator) {
@@ -77,8 +82,9 @@ void vsync_poll(void) {   /* relogio do monitor (DWM) a cada ~0,5 s; decide a si
         if (!lock && !told_free && g_lock_allow && !off && hz > 0) { told_free = true; fprintf(stderr, "[ritmo] monitor %.2f Hz (janela em %d Hz): sem sincronia (60 nao divide), ritmo proprio de 59,94%c", hz, g_mon_hz, 10); }
         g_vb_lock = lock; g_vb_k = k;
     }
+#endif /* __linux__ */
 }
-}
+}  /* namespace */
 
 int pace_monitor_hz(void) { return g_mon_hz; }
 static double g_as_work[16], g_as_off = 0, g_as_gpu = 4.0; static int g_as_wi;

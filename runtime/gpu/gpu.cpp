@@ -29,10 +29,23 @@ struct GpuLock {   /* TF_GPU_LOCK_LOG: registra esperas longas pela trava (diagn
 void gpu_lock_yield_begin(int *saved) { *saved = t_gpu_depth; if (t_gpu_depth) { t_gpu_depth = 0; g_gpu_mu.unlock(); } }
 void gpu_lock_yield_end(int saved) { if (saved) { g_gpu_mu.lock(); t_gpu_depth = saved; } }
 #define GL GpuLock gl_
+#ifdef __linux__
+/* Direct3D 11 does not exist on Linux: gpu_select refuses it and the callers fall through to
+ * Vulkan or the software renderer (display.cpp's start_gpu chain). The symbols stay so the
+ * single gpu.h compiles untouched (they are defined by gpu_d3d11.cpp on Windows). */
+static const GpuBackend gpu_backend_d3d_stub = {"Direct3D 11 (unavailable)"};
+#define gpu_backend_d3d11 gpu_backend_d3d_stub
+volatile bool g_excl_failed = false;
+volatile bool g_gpu_lost = false;
+#endif
 bool gpu_select(int renderer) { GL;
+#ifdef __linux__
+    if (renderer == GFX_RENDER_D3D11) return false;   /* no Direct3D 11 on Linux: the caller falls through to Vulkan/software */
+#else
     if (renderer == GFX_RENDER_D3D11) g_b = &gpu_backend_d3d11;
-    else if (renderer == GFX_RENDER_VULKAN) g_b = &gpu_backend_vulkan;
-    else return false;
+#endif
+    if (renderer == GFX_RENDER_VULKAN) g_b = &gpu_backend_vulkan;
+    if (renderer != GFX_RENDER_D3D11 && renderer != GFX_RENDER_VULKAN) return false;
     return true;
 }
 const char *gpu_backend_name(void) { return g_b ? g_b->name : "nenhum"; }

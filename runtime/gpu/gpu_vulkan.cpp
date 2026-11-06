@@ -7,10 +7,20 @@
  *   texturas sao enviadas num command buffer de upload separado (sem quebrar o render pass); VkPipelineCache gravado em disco.
  * - uma unica submissao por quadro (apresentacao), salvo leituras sincronas (comparacao com o nativo). */
 #define VK_NO_PROTOTYPES
+#ifdef __linux__
+/* the Vulkan surface is an Xlib surface (through the SDL window's X11 handle; XWayland included).
+ * SDL2 >= 2.24 tied its own Vulkan helpers to SDL_WINDOW_VULKAN windows, so the shim hands out
+ * the Display* and the Window id instead (tf_shim_x11_window, shim_user.cpp). */
+#define VK_USE_PLATFORM_XLIB_KHR
+#else
 #define VK_USE_PLATFORM_WIN32_KHR
+#endif
 #include <mutex>
 #include <thread>
 #include <vulkan/vulkan.h>
+#ifdef __linux__
+typedef void *PFN_vkCreateWin32SurfaceKHR;   /* the X-macro list keeps the Windows name; never called on Linux */
+#endif
 #include "gpu.h"
 #include "gfx.h"
 #include "util.h"
@@ -26,10 +36,15 @@
 
 /* ------------------------------------------------------------------ funcoes do Vulkan */
 #define VK_GLOBAL_FUNCS(X) X(vkCreateInstance) X(vkEnumerateInstanceExtensionProperties)
+#ifdef __linux__
+#define TF_VK_SURFACE_CREATE X(vkCreateXlibSurfaceKHR)
+#else
+#define TF_VK_SURFACE_CREATE X(vkCreateWin32SurfaceKHR)
+#endif
 #define VK_INSTANCE_FUNCS(X) \
     X(vkDestroyInstance) X(vkEnumeratePhysicalDevices) X(vkGetPhysicalDeviceProperties) X(vkGetPhysicalDeviceQueueFamilyProperties) \
     X(vkGetPhysicalDeviceMemoryProperties) X(vkCreateDevice) X(vkGetDeviceProcAddr) X(vkEnumerateDeviceExtensionProperties) \
-    X(vkCreateWin32SurfaceKHR) X(vkDestroySurfaceKHR) X(vkGetPhysicalDeviceSurfaceSupportKHR) X(vkGetPhysicalDeviceSurfaceCapabilitiesKHR) \
+    TF_VK_SURFACE_CREATE X(vkDestroySurfaceKHR) X(vkGetPhysicalDeviceSurfaceSupportKHR) X(vkGetPhysicalDeviceSurfaceCapabilitiesKHR) \
     X(vkGetPhysicalDeviceSurfaceFormatsKHR) X(vkGetPhysicalDeviceSurfacePresentModesKHR) X(vkGetPhysicalDeviceFeatures2) X(vkGetPhysicalDeviceFormatProperties)
 #define VK_DEVICE_FUNCS(X) \
     X(vkDestroyDevice) X(vkGetDeviceQueue) X(vkDeviceWaitIdle) X(vkQueueWaitIdle) X(vkCreateSwapchainKHR) X(vkDestroySwapchainKHR) X(vkGetSwapchainImagesKHR) \
@@ -903,8 +918,15 @@ static bool ensure_swap(void) {
     RECT cr; GetClientRect(g_hwnd, &cr); int cw = cr.right - cr.left, ch = cr.bottom - cr.top;
     if (cw <= 0 || ch <= 0) return false;   /* minimizada */
     if (!g_surf) {
+#ifdef __linux__
+        void *dpy = nullptr; unsigned long xid = 0;
+        if (!tf_shim_x11_window(g_hwnd, &dpy, &xid)) { fprintf(stderr, "[vulkan] the window has no X11 handle (Wayland native?); falling back to the software renderer\n"); return false; }
+        VkXlibSurfaceCreateInfoKHR ci = {VK_STRUCTURE_TYPE_XLIB_SURFACE_CREATE_INFO_KHR}; ci.dpy = (Display *)dpy; ci.window = (Window)xid;
+        CHK(vkCreateXlibSurfaceKHR(g_inst, &ci, nullptr, &g_surf));
+#else
         VkWin32SurfaceCreateInfoKHR ci = {VK_STRUCTURE_TYPE_WIN32_SURFACE_CREATE_INFO_KHR}; ci.hinstance = GetModuleHandleA(nullptr); ci.hwnd = g_hwnd;
         CHK(vkCreateWin32SurfaceKHR(g_inst, &ci, nullptr, &g_surf));
+#endif
         VkBool32 ok = VK_FALSE; vkGetPhysicalDeviceSurfaceSupportKHR(g_pd, g_qf, g_surf, &ok); if (!ok) { fprintf(stderr, "[vulkan] a fila nao apresenta nessa janela\n"); return false; }
     }
     if (!g_swap) return create_swap(cw, ch);
@@ -1039,8 +1061,14 @@ static bool load_lib(void) {
 }
 static bool build_device(void) {
     VkApplicationInfo ai = {VK_STRUCTURE_TYPE_APPLICATION_INFO}; ai.pApplicationName = "Tag Force Recomp"; ai.apiVersion = VK_API_VERSION_1_3;
+#ifdef __linux__
+    const char *iext[] = {"VK_KHR_surface", "VK_KHR_xlib_surface"};
+    std::vector<const char *> exts(iext, iext + 2);
+#else
     const char *iext[] = {"VK_KHR_surface", "VK_KHR_win32_surface"};
-    VkInstanceCreateInfo ic = {VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO}; ic.pApplicationInfo = &ai; ic.enabledExtensionCount = 2; ic.ppEnabledExtensionNames = iext;
+    std::vector<const char *> exts(iext, iext + 2);
+#endif
+    VkInstanceCreateInfo ic = {VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO}; ic.pApplicationInfo = &ai; ic.enabledExtensionCount = (uint32_t)exts.size(); ic.ppEnabledExtensionNames = exts.data();
     CHK(vkCreateInstance(&ic, nullptr, &g_inst));
 #define X(n) n = (PFN_##n)(void *)vkGetInstanceProcAddr_(g_inst, #n);
     VK_INSTANCE_FUNCS(X)

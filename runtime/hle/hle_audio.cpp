@@ -1,6 +1,9 @@
 /* HLE: audio (sceAudio, sceSasCore, sceAtrac3plus). Saida real via runtime/audio/audio_out.cpp; SAS decodifica VAG (ADPCM) de
  * verdade; ATRAC via FFmpeg (ffmpeg_dec.cpp; sem as DLLs, silencio com a temporizacao certa). */
 #include "hle.h"
+#ifdef __linux__
+#include "windows.h"   /* _wfopen/_fseeki64 come from the compat layer */
+#endif
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>

@@ -326,6 +326,11 @@ static void build_mips(TexReplImg &img) {   /* mesmos tamanhos do Vulkan (max(1,
  * parallel first opens are ~5x faster. A new scene asks for ~24 textures one by one on the game thread (~130 ms: an audio gap). So a few background threads
  * open every cached .bc7 once after the start (low priority, I/O included); by the first duel the opens are warm. */
 static bool cache_on_hdd(void) {   /* the drive of the working folder has a seek penalty (spinning disk): parallel opens would only make the heads thrash */
+#ifdef __linux__
+    /* no STORAGE_QUERY_PROPERTY on Linux: assume no seek penalty (SSD behaviour, the common case;
+     * a wrong guess only changes how the BC7 warm-up is parallelised) */
+    return false;
+#else
     wchar_t cwd[MAX_PATH]; if (!GetCurrentDirectoryW(MAX_PATH, cwd) || cwd[1] != L':') return false;
     wchar_t vol[8] = {L'\\', L'\\', L'.', L'\\', cwd[0], L':', 0};
     HANDLE h = CreateFileW(vol, 0, FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr, OPEN_EXISTING, 0, nullptr); if (h == INVALID_HANDLE_VALUE) return false;
@@ -333,6 +338,7 @@ static bool cache_on_hdd(void) {   /* the drive of the working folder has a seek
     DEVICE_SEEK_PENALTY_DESCRIPTOR d = {}; DWORD got = 0;
     const bool ok = DeviceIoControl(h, IOCTL_STORAGE_QUERY_PROPERTY, &q, sizeof q, &d, sizeof d, &got, nullptr) && got >= sizeof d;
     CloseHandle(h); return ok && d.IncursSeekPenalty;
+#endif
 }
 static DWORD WINAPI warm_cache(LPVOID) {
     Sleep(4000);

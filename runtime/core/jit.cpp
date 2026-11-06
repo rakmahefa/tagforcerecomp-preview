@@ -38,7 +38,13 @@ static double jit_ceil(double x) { if (!(__builtin_fabs(x) < 4503599627370496.0)
 static double jit_trunc(double x) { if (!(__builtin_fabs(x) < 4503599627370496.0)) return x; return (double)(long long)x; }
 }
 static bool load_tcc(const std::wstring &dir) {
-    T.h = LoadLibraryW((dir + L"libtcc.dll").c_str()); if (!T.h) return false;
+#ifdef __linux__
+    T.h = LoadLibraryW((dir + L"libtcc.so").c_str());
+    if (!T.h) T.h = LoadLibraryW(L"libtcc.so");   /* system TinyCC install */
+#else
+    T.h = LoadLibraryW((dir + L"libtcc.dll").c_str());
+#endif
+    if (!T.h) return false;
 #define L_(f, n) *(void **)&T.f = (void *)GetProcAddress(T.h, n); if (!T.f) return false;
     L_(nw, "tcc_new") L_(del, "tcc_delete") L_(libpath, "tcc_set_lib_path") L_(errf, "tcc_set_error_func") L_(opts, "tcc_set_options") L_(inc, "tcc_add_include_path")
     L_(def, "tcc_define_symbol") L_(otype, "tcc_set_output_type") L_(cstr, "tcc_compile_string") L_(addsym, "tcc_add_symbol") L_(reloc, "tcc_relocate") L_(getsym, "tcc_get_symbol")
@@ -81,12 +87,12 @@ static void drop_stale(const std::wstring &dir, const std::string &mod, const st
     FindClose(h);
 }
 bool jit_init(void) {
-    std::wstring tccdir = exe_dir() + L"tcc\\", gen = code_dir(game_id_built());   /* TinyCC's libtcc.dll, include/ and lib/ in tcc/; the translated modules in gen/ */
+    std::wstring tccdir = exe_dir() + L"tcc\\", gen = code_dir(game_id_built());   /* TinyCC's libtcc (libtcc.so on Linux), include/ and lib/ in tcc/; the translated modules in gen/ */
     if (const wchar_t *d = _wgetenv(L"TF_JIT_TCC")) tccdir = d;
     if (const wchar_t *g = _wgetenv(L"TF_JIT_GEN")) gen = g;
     if (!tccdir.empty() && tccdir.back() != L'\\') tccdir += L'\\';
     if (!gen.empty() && gen.back() != L'\\') gen += L'\\';
-    if (!load_tcc(tccdir)) { fprintf(stderr, "[jit] libtcc.dll nao encontrada em %ls\n", tccdir.c_str()); return false; }
+    if (!load_tcc(tccdir)) { fprintf(stderr, "[jit] libtcc nao encontrada em %ls\n", tccdir.c_str()); return false; }
     std::string incdir = tcc_path(exe_dir()) + "include";
     if (const char *i = getenv("TF_JIT_INC")) incdir = i;
     FILE *mf = _wfopen((gen + L"modulos.tsv").c_str(), L"rb"); if (!mf) { fprintf(stderr, "[jit] sem modulos.tsv\n"); return false; }
@@ -100,7 +106,11 @@ bool jit_init(void) {
     const bool use_cache = !getenv("TF_JIT_NOCACHE") && tcc_path(cache).find('?') == std::string::npos;   /* '?': the path has characters TinyCC cannot open */
     uint64_t seed = (trace ? 1 : 0) | (ftrace ? 2 : 0);
     { const char *i = getenv("TF_JIT_INC"); const std::string h = read_all((i ? to_wide(i) : exe_dir() + L"include") + L"\\psp_rt.h"); seed = xxh64(h.data(), h.size(), seed);
+#ifdef __linux__
+      WIN32_FILE_ATTRIBUTE_DATA a; if (GetFileAttributesExW((tccdir + L"libtcc.so").c_str(), GetFileExInfoStandard, &a)) seed ^= ((uint64_t)a.nFileSizeHigh << 32 | a.nFileSizeLow) * 0x9E3779B97F4A7C15ull; }
+#else
       WIN32_FILE_ATTRIBUTE_DATA a; if (GetFileAttributesExW((tccdir + L"libtcc.dll").c_str(), GetFileExInfoStandard, &a)) seed ^= ((uint64_t)a.nFileSizeHigh << 32 | a.nFileSizeLow) * 0x9E3779B97F4A7C15ull; }
+#endif
     if (use_cache) CreateDirectoryW(cache.c_str(), nullptr);
     DWORD t0 = GetTickCount(); size_t pos = 0; int ok = 0, hits = 0;
     while (pos < man.size()) {

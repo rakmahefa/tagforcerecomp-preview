@@ -4,6 +4,19 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
 
 ## [Unreleased]
 
+### Linux runtime (branch `linux-runtime`)
+
+- the runtime builds and runs on Linux (`tools/build_linux.sh`): a Win32 compatibility layer
+  (`runtime/plat/`, POSIX + SDL2 + software GDI + stb_truetype fonts) so the game code stays
+  single-source, with `#ifdef __linux__` only in the genuinely platform-bound spots
+  (coroutines in SysV AMD64, the TinyCC JIT on `libtcc.so`, SDL2 audio, the Vulkan Xlib
+  surface, libpng/libjpeg codecs, the translator on the system Python, mods as `plugin.so`);
+- Direct3D 11 does not exist on Linux: the game falls back to Vulkan or the software renderer;
+- known gaps, all logged: the update check is unavailable, exclusive fullscreen is borderless,
+  and the DWM vblank clock is replaced by the nominal frame grid.
+
+## [Unreleased]
+
 ### Added
 - **Linux launcher** (`tools/launcher/`): an SDL2 + Dear ImGui window in the style of the DQ8Recomp launcher, with the pages **Your disc, Tools, Options, Build, Play**. It recognises the European disc (ULES-00600) from the ISO itself, checks g++/CMake/Ninja/Python/FFmpeg, copies the game files and translates the game's code through the same Python tools as the Windows release, and stops honestly at compiling the runtime, which is still Windows-only. `tools/launcher/package_linux.py` builds the Linux release - an executable plus a `payload/` folder with the source - as a tar.gz, with SDL2 bundled; `.github/workflows/linux-launcher.yml` builds, tests (synthetic disc, smoke test, screenshots of every page) and publishes it as a prerelease on pushes to master. See `docs/LINUX.md`.
 

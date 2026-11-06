@@ -53,7 +53,7 @@ bool iso_install(const wchar_t *iso, const wchar_t *dest, InstProgress cb, void 
         if (it.dir) { fs::create_directories(root / wp, ec); continue; }
         if (by_lba.count(it.lba)) { continue; }   /* mesmo arquivo com dois nomes: so grava uma copia */
         by_lba[it.lba] = it.path; covered.push_back({it.lba, (it.size + 2047) / 2048});
-        FILE *f = _wfopen((root / wp).c_str(), L"wb"); if (!f) return fail(L"Could not write: " + wp);
+        FILE *f = _wfopen((root / wp).wstring().c_str(), L"wb"); if (!f) return fail(L"Could not write: " + wp);
         for (uint64_t off = 0; off < it.size;) {
             uint32_t n = (uint32_t)std::min<uint64_t>(buf.size(), it.size - off);
             int r = iso_read_raw(it.lba, (uint32_t)off, buf.data(), n);
@@ -86,14 +86,14 @@ bool iso_install(const wchar_t *iso, const wchar_t *dest, InstProgress cb, void 
         if (cb) cb(0.90 + 0.08 * (double)cur / (double)std::max<uint64_t>(nsect, 1), L"disc sectors", ctx);
     }
     if (cur < nsect) scan_gap(cur, nsect);
-    { FILE *f = _wfopen((root / L"_setores.bin").c_str(), L"wb"); if (!f) return fail(L"Could not write the index.");
+    { FILE *f = _wfopen((root / L"_setores.bin").wstring().c_str(), L"wb"); if (!f) return fail(L"Could not write the index.");
       uint32_t hdr[2] = {0x45534654u, (uint32_t)runs.size()}; fwrite(hdr, 4, 2, f);
       for (auto &r : runs) { uint32_t v[2] = {r.lba, r.count}; fwrite(v, 4, 2, f); }
       if (!meta.empty()) fwrite(meta.data(), 1, meta.size(), f);
       fclose(f); }
     std::string tsv = "#tagforce-disco 1\n#setores " + std::to_string(nsect) + "\nD " + std::to_string(rl) + " " + std::to_string(rs) + " \n";
     for (auto &it : items) tsv += std::string(it.dir ? "D " : "F ") + std::to_string(it.lba) + " " + std::to_string(it.size) + " " + it.path + "\n";
-    { fs::path tmp = root / L"_disco.tsv.tmp"; FILE *f = _wfopen(tmp.c_str(), L"wb"); if (!f) return fail(L"Could not write the index.");
+    { fs::path tmp = root / L"_disco.tsv.tmp"; FILE *f = _wfopen(tmp.wstring().c_str(), L"wb"); if (!f) return fail(L"Could not write the index.");
       fwrite(tsv.data(), 1, tsv.size(), f); fclose(f);
       fs::rename(tmp, root / L"_disco.tsv", ec); if (ec) { fs::remove(root / L"_disco.tsv", ec); fs::rename(tmp, root / L"_disco.tsv", ec); } }   /* o indice por ultimo = instalacao completa */
     iso_close();

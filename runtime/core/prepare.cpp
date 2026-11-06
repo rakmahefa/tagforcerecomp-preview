@@ -31,8 +31,14 @@ bool code_ready(const std::string &id) {
 
 bool code_prepare(const std::string &id, const std::wstring &data, void (*cb)(double, const wchar_t *, void *), void *ctx, std::wstring *err) {
     auto fail = [&](const std::wstring &m) { if (err) *err = m; fprintf(stderr, "[prepare] %ls\n", m.c_str()); return false; };
-    std::wstring tools = exe_dir() + L"tools\\", py = tools + L"python\\python.exe", tr = tools + L"translator\\", script = tr + L"build_modules.py";
+    std::wstring tools = exe_dir() + L"tools\\", py, tr = tools + L"translator\\", script = tr + L"build_modules.py";
+#ifdef __linux__
+    py = L"python3";   /* the Linux payload runs the translator with the system Python */
+    if (!file_exists(script)) return fail(L"The translator is missing (tools\\translator\\build_modules.py): extract the whole release.");
+#else
+    py = tools + L"python\\python.exe";
     if (!file_exists(py) || !file_exists(script)) return fail(L"The translator is missing (tools\\python, tools\\translator\\build_modules.py): extract the whole release zip.");
+#endif
     std::wstring tsv = tr + (is_eu(id) ? L"modules.tsv" : L"modules_" + compact_id(id) + L".tsv");
     if (!file_exists(tsv)) return fail(L"This game version (" + to_wide(id) + L") is not supported by this release yet.");
     int total = 0;
