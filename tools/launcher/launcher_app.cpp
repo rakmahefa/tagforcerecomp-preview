@@ -1273,7 +1273,7 @@ void LauncherApp::drawToolsPage() {
     if (ImGui::BeginTable("##tools", 3, ImGuiTableFlags_SizingStretchProp | ImGuiTableFlags_RowBg)) {
         ImGui::TableSetupColumn("##state", ImGuiTableColumnFlags_WidthFixed, em(2.0f));
         ImGui::TableSetupColumn("##what", ImGuiTableColumnFlags_WidthStretch);
-        ImGui::TableSetupColumn("##version", ImGuiTableColumnFlags_WidthFixed, em(9.0f));
+        ImGui::TableSetupColumn("##version", ImGuiTableColumnFlags_WidthFixed, em(11.0f));
         const float row = em(1.9f);
         const float padding = ImGui::GetStyle().CellPadding.y;
         for (const ToolCheck &tool : report->tools) {
@@ -1304,11 +1304,14 @@ void LauncherApp::drawToolsPage() {
             ImGui::PopStyleColor();
             ImGui::TableNextColumn();
             ImGui::SetCursorPosY(ImGui::GetCursorPosY() + lift);
-            if (tool.found)
+            if (tool.found) {
+                // Long distribution strings ("g++ (Debian 14.2.0-19)") end cleanly.
+                std::string shown = tool.version.size() > 30 ? tool.version.substr(0, 29) + "..." : tool.version;
                 ImGui::TextColored(palette::rgba(tool.problem.empty() ? palette::kText : palette::kWarn), "%s",
-                                   tool.version.c_str());
-            else
+                                   shown.c_str());
+            } else {
                 ImGui::TextColored(palette::rgba(tool.optional ? palette::kWarn : palette::kBad), "Not found");
+            }
         }
         ImGui::EndTable();
     }
