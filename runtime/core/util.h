@@ -3,6 +3,18 @@
 #include <string>
 #include <stdint.h>
 
+/* Path separator for the paths the runtime joins by hand. The Win32 shim maps '\\' -> '/' on the
+ * file APIs, so those joins work either way; but a few of these paths also reach TinyCC or the
+ * shell as plain bytes (tcc_add_include_path, the JIT cache, the translator's command line),
+ * and there a backslash is just a character. On Linux they must be real separators. */
+#ifdef __linux__
+#define TF_SEP L"/"
+#define TF_CSEP L'/'
+#else
+#define TF_SEP L"\\"
+#define TF_CSEP L'\\'
+#endif
+
 std::wstring exe_dir(void);            /* pasta do .exe, com a barra final */
 int tf_diag_opt(const char *key, int def);   /* "key=value" line of diag.txt next to the .exe (diagnostic builds), else def */
 bool tf_lat_debug(void);             /* latency/audio diagnostics: TF_LAT_DEBUG is set, or a file named diag.txt sits next to the .exe */

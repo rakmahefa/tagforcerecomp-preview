@@ -44,6 +44,7 @@ texturas_despejo/
 /START HERE.txt
 /FFMPEG-LGPL.txt
 /*.dll
+/TagForceRecomp
 /tcc/
 /include/
 /tools/python/

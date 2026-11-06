@@ -40,8 +40,9 @@ void psp_unimpl(CPU *c, uint32_t pc, uint32_t word);
 }
 #endif
 
-/* TinyCC (jit.cpp) liga o codigo em memoria longe do .exe: dados do runtime precisam ser acessados por indirecao (dllimport) */
-#ifdef __TINYC__
+/* TinyCC (jit.cpp) liga o codigo em memoria longe do .exe: dados do runtime precisam ser acessados por indirecao (dllimport).
+ * No Linux o TinyCC (ELF) nao parseia __declspec, e os simbolos do tcc_add_symbol sao resolvidos diretamente na relocacao. */
+#if defined(__TINYC__) && defined(_WIN32)
 #define TF_DATA __declspec(dllimport)
 #else
 #define TF_DATA

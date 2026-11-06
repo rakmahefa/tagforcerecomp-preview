@@ -521,7 +521,9 @@ SIZE_T GlobalSize(HGLOBAL p) { return p ? malloc_usable_size(p) : 0; }
 static std::vector<std::wstring> g_argv_w;
 static std::wstring g_cmdline;
 extern "C" void tf_shim_set_argv(int argc, char **argv) {   /* called from main_run.cpp */
-    for (int i = 0; i < argc; i++) { g_argv_w.push_back(tf_u2w(argv[i], true)); }
+    /* args are verbatim: a value is not necessarily a path, and std::filesystem paths built from
+     * them must keep the real separator (the file APIs map '\\' -> '/' either way, tf_u2w(true)) */
+    for (int i = 0; i < argc; i++) { g_argv_w.push_back(tf_u2w(argv[i], false)); }
     for (size_t i = 0; i < g_argv_w.size(); i++) { if (i) g_cmdline += L" "; g_cmdline += g_argv_w[i]; }
 }
 LPCWSTR GetCommandLineW(void) { return g_cmdline.c_str(); }
@@ -1254,11 +1256,9 @@ BOOL GetThreadContext(HANDLE h, CONTEXT *cx) {
     if (!h || !cx || h->kind != tf_handle_s::H_FILE) return FALSE;
     memset(cx, 0, sizeof *cx);
 #ifdef __x86_64__
-    iovec iov{(void *)&cx->Rip - 8, 8};   /* regset NT_x86_64... simplest: RIP via PTRACE_GETREGS area */
-    user_regs_struct regs;
+    user_regs_struct regs;   /* RIP via PTRACE_GETREGS: the simplest regset to fetch */
     if (ptrace(PTRACE_GETREGS, h->fd, nullptr, &regs) != 0) return FALSE;
     cx->Rip = regs.rip;
-    (void)iov;
     return TRUE;
 #else
     (void)cx;

@@ -4,7 +4,7 @@
 // spirit of the DQ8Recomp launcher (this file is original code; see
 // launcher.h for the license note). The pages do real work: the disc is read
 // and recognised, the tools are probed, the build runs as child processes,
-// and Play starts the game once a Linux runtime lands beside the launcher.
+// and Play starts the game the Build stage leaves in <workspace>/source.
 #include "launcher_app.h"
 
 #include <algorithm>
@@ -567,7 +567,11 @@ std::filesystem::path LauncherApp::installDir() const {
 
 std::filesystem::path LauncherApp::sourceRoot() const { return m_payload ? m_payload->source : m_repo; }
 
-std::filesystem::path LauncherApp::gamePath() const { return installDir() / "TagForceRecomp"; }
+std::filesystem::path LauncherApp::gamePath() const {
+    // the game the Build stage leaves in <workspace>/source: the executable beside the TinyCC
+    // bundle and the header the generated code includes, like the Windows release root
+    return std::filesystem::path(m_config.workspace) / "source" / "TagForceRecomp";
+}
 
 void LauncherApp::handleEvent(const SDL_Event &event) {
     switch (event.type) {
@@ -738,10 +742,9 @@ void LauncherApp::launchGame() {
         return;
     std::error_code ec;
     if (!std::filesystem::is_regular_file(gamePath(), ec)) {
-        m_launchError =
-            "The Linux runtime is not part of this preview: Build has prepared your game files and translated code, "
-            "and this starts the game as soon as a Linux build of TagForceRecomp sits beside the launcher (in " +
-            installDir().string() + ").";
+        m_launchError = "The game is not built yet. Build it on the Build page first (the Tools page lists the packages "
+                        "it needs); Play then starts it from " +
+                        gamePath().string() + ".";
         return;
     }
     const pid_t pid = fork();
@@ -752,7 +755,7 @@ void LauncherApp::launchGame() {
         freopen(log.c_str(), "a", stderr);
         const std::string game = gamePath().string();
         const std::string data = (std::filesystem::path(m_config.workspace) / "jogo").string();
-        execl(game.c_str(), game.c_str(), "--dados", data.c_str(), static_cast<char *>(nullptr));
+        execl(game.c_str(), game.c_str(), "--data", data.c_str(), static_cast<char *>(nullptr));
         _exit(127);
     }
     if (pid < 0)
@@ -828,12 +831,17 @@ void LauncherApp::showPreview(Preview preview) {
     };
     const bool missing = preview == Preview::ToolsMissing;
     add("C++ compiler", "Compiles the game", missing ? nullptr : "13.2.0");
-    add("CMake", "Configures the runtime build", missing ? nullptr : "3.28.3");
-    add("Ninja", "Runs the build", missing ? nullptr : "1.11.1");
     add("Python 3", "Copies the disc and translates the game code", "3.12.3");
-    add("FFmpeg", "Plays the movies and music; without it they stay silent", missing ? nullptr : "6.1.1", true);
+    add("Shader compiler", "Compiles the Vulkan shaders (glslc)", missing ? nullptr : "glslc 2025.2");
+    add("SDL2", "Window, input and audio", missing ? nullptr : "2.30.3");
+    add("FFmpeg libraries", "Play the movies and music", missing ? nullptr : "60.31.102");
+    add("PNG/JPEG codecs", "Read images and textures", missing ? nullptr : "1.6.44");
+    add("Vulkan", "Draws the game (or the software renderer)", missing ? nullptr : "1.3.275");
+    add("TinyCC", "Compiles the translated game code at run time", "found", true);
     if (missing) {
-        tools.installCommand = "sudo apt install build-essential cmake ninja-build python3 ffmpeg";
+        tools.installCommand =
+            "sudo apt install build-essential python3 pkg-config glslc bzip2 libsdl2-dev libavcodec-dev "
+            "libavformat-dev libavutil-dev libswscale-dev libswresample-dev libpng-dev libjpeg-dev libvulkan-dev";
         tools.instructions = "Your distribution's packages have them all. Copy the line below into a terminal, enter "
                              "your password, and press Check again when it finishes.";
     }
@@ -880,22 +888,21 @@ void LauncherApp::showPreview(Preview preview) {
         done(Stage::TranslateCode, 48.0, "40 of 40 modules");
         StageState &compile = m_previewStages[static_cast<size_t>(Stage::CompileRuntime)];
         compile.status = preview == Preview::Building ? StageStatus::Running : StageStatus::Failed;
-        compile.progress = 0.38;
+        compile.progress = 0.37;
         compile.seconds = 21.0;
         compile.startedAt = -1.0;
-        compile.detail = "cmake --build build-linux";
-        m_previewLog = {"$ cd /home/you/TagForceRecomp/source && cmake -S . -B build-linux -G Ninja",
-                        "-- The C compiler identification is GNU 13.2.0",
-                        "-- Configuring done (1.2s)",
-                        "$ cmake --build build-linux -j 8",
-                        "[12/57] Building CXX object runtime/core/kernel.cpp.o"};
+        compile.detail = "[21/57] runtime/core/kernel.cpp";
+        m_previewLog = {"$ cd /home/you/TagForceRecomp/source && JOBS=8 sh tools/build_linux.sh",
+                        "[1/57] runtime/core/kernel.cpp",
+                        "[2/57] runtime/core/coro.cpp",
+                        "[3/57] runtime/plat/shim_user.cpp"};
         if (preview == Preview::BuildFailed) {
             // The essentials fit the box: the tail, where the failure speaks.
-            m_previewLog = {"$ cd /home/you/TagForceRecomp/source && cmake -S . -B build-linux -G Ninja",
-                            "$ cmake --build build-linux -j 8",
-                            "g++: internal compiler error: Killed (program cc1plus)",
-                            "ninja: build stopped: subcommand failed."};
-            m_previewError = "Compiling the runtime failed; the log shows why.";
+            m_previewLog = {"$ cd /home/you/TagForceRecomp/source && JOBS=8 sh tools/build_linux.sh",
+                            "[55/57] runtime/gpu/gpu_vulkan.cpp",
+                            "runtime/gpu/gpu_vulkan.cpp:1:10: fatal error: vulkan/vulkan.h: No such file or directory",
+                            "build_linux.sh: missing: vulkan (Debian/Ubuntu: libvulkan-dev)"};
+            m_previewError = "Compiling the runtime failed; the log shows why (the Tools page lists the packages it needs).";
         }
         break;
     }
@@ -1523,16 +1530,21 @@ void LauncherApp::drawPlayPage() {
              palette::kTextMuted, g_fonts.regular);
     ImGui::Dummy(ImVec2(0.0f, em(1.2f)));
     if (m_live && !m_built) {
-        // This preview's honest limit, said plainly.
+        // What is ready, and what to do next, said plainly.
         ImGui::PushStyleColor(ImGuiCol_Text, palette::rgba(palette::kGold));
         drawIcon(list, Icon::Info, ImGui::GetCursorScreenPos() + ImVec2(em(0.6f), em(0.6f)), em(1.2f), palette::kGold);
         ImGui::Dummy(ImVec2(em(1.5f), 0.0f));
         ImGui::SameLine(0.0f, em(0.3f));
-        wrapped(palette::kText,
-                "The Windows runtime does not build on Linux yet. This preview copies your game files and translates "
-                "the game's code into " +
-                    std::filesystem::path(m_config.workspace).string() +
-                    "; Play starts the game the moment a Linux build of TagForceRecomp sits beside the launcher.");
+        if (m_pipeline.stoppedAtGap())
+            wrapped(palette::kText,
+                    "This payload predates the Linux runtime, so Build stopped after the translation. Your game files and "
+                    "translated code are ready in " +
+                    std::filesystem::path(m_config.workspace).string() + "; a newer payload builds and runs the game here.");
+        else
+            wrapped(palette::kText,
+                    "The game is not built yet. Rebuild on the Build page (or run tools/build_linux.sh in " +
+                        (std::filesystem::path(m_config.workspace) / "source").string() +
+                        "), and Play starts it from there.");
         ImGui::PopStyleColor();
         ImGui::Dummy(ImVec2(0.0f, em(0.8f)));
     }

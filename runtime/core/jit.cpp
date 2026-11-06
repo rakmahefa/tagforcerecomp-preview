@@ -54,11 +54,19 @@ static bool load_tcc(const std::wstring &dir) {
 }
 static void tcc_error(void *, const char *m) { fprintf(stderr, "[jit] %s\n", m); }
 static std::string tcc_path(const std::wstring &w) {   /* TCC usa caminhos narrow via CRT/Win32, que neste build seguem a pagina ANSI, nao UTF-8. */
+#ifdef __linux__
+    /* the shim's wide paths are Windows-style (backslashes); TinyCC does real POSIX I/O, so map them */
+    {
+        extern std::string tf_w2u(const wchar_t *w, bool path);
+        return tf_w2u(w.c_str(), true);
+    }
+#else
     int n = WideCharToMultiByte(CP_ACP, 0, w.c_str(), -1, nullptr, 0, nullptr, nullptr);
     if (n <= 1) return {};
     std::string s(n, '\0');
     WideCharToMultiByte(CP_ACP, 0, w.c_str(), -1, &s[0], n, nullptr, nullptr);
     s.pop_back(); return s;
+#endif
 }
 
 static void jit_selftest(void);
@@ -87,11 +95,11 @@ static void drop_stale(const std::wstring &dir, const std::string &mod, const st
     FindClose(h);
 }
 bool jit_init(void) {
-    std::wstring tccdir = exe_dir() + L"tcc\\", gen = code_dir(game_id_built());   /* TinyCC's libtcc (libtcc.so on Linux), include/ and lib/ in tcc/; the translated modules in gen/ */
+    std::wstring tccdir = exe_dir() + L"tcc" TF_SEP, gen = code_dir(game_id_built());   /* TinyCC's libtcc (libtcc.so on Linux), include/ and lib/ in tcc/; the translated modules in gen/ */
     if (const wchar_t *d = _wgetenv(L"TF_JIT_TCC")) tccdir = d;
     if (const wchar_t *g = _wgetenv(L"TF_JIT_GEN")) gen = g;
-    if (!tccdir.empty() && tccdir.back() != L'\\') tccdir += L'\\';
-    if (!gen.empty() && gen.back() != L'\\') gen += L'\\';
+    if (!tccdir.empty() && tccdir.back() != TF_CSEP) tccdir += TF_CSEP;
+    if (!gen.empty() && gen.back() != TF_CSEP) gen += TF_CSEP;
     if (!load_tcc(tccdir)) { fprintf(stderr, "[jit] libtcc nao encontrada em %ls\n", tccdir.c_str()); return false; }
     std::string incdir = tcc_path(exe_dir()) + "include";
     if (const char *i = getenv("TF_JIT_INC")) incdir = i;
@@ -102,10 +110,10 @@ bool jit_init(void) {
      * header the code includes (include/psp_rt.h), libtcc.dll's size and the compile flags: a new translation, a new runtime or other flags
      * compile again. Any cache failure (path TinyCC cannot open, disk full) falls back to compiling in memory. TF_JIT_NOCACHE=1 skips the cache. */
     const bool trace = !getenv("TF_JIT_NOTRACE"), ftrace = getenv("TF_JIT_FTRACE") != nullptr;   /* no TRC function trace / TF_FTRACE bisection hooks */
-    const std::wstring cache = gen + L"jitcache\\";
+    const std::wstring cache = gen + L"jitcache" TF_SEP;
     const bool use_cache = !getenv("TF_JIT_NOCACHE") && tcc_path(cache).find('?') == std::string::npos;   /* '?': the path has characters TinyCC cannot open */
     uint64_t seed = (trace ? 1 : 0) | (ftrace ? 2 : 0);
-    { const char *i = getenv("TF_JIT_INC"); const std::string h = read_all((i ? to_wide(i) : exe_dir() + L"include") + L"\\psp_rt.h"); seed = xxh64(h.data(), h.size(), seed);
+    { const char *i = getenv("TF_JIT_INC"); const std::string h = read_all((i ? to_wide(i) : exe_dir() + L"include") + TF_SEP L"psp_rt.h"); seed = xxh64(h.data(), h.size(), seed);
 #ifdef __linux__
       WIN32_FILE_ATTRIBUTE_DATA a; if (GetFileAttributesExW((tccdir + L"libtcc.so").c_str(), GetFileExInfoStandard, &a)) seed ^= ((uint64_t)a.nFileSizeHigh << 32 | a.nFileSizeLow) * 0x9E3779B97F4A7C15ull; }
 #else
@@ -120,10 +128,18 @@ bool jit_init(void) {
         size_t tab = line.find('\t'); if (tab == std::string::npos || line[0] == '#') continue;
         std::string c = line.substr(0, tab), iso = line.substr(tab + 1);
         const std::string src = read_all(gen + to_wide(c) + L".c"); if (src.empty()) { fprintf(stderr, "[jit] sem %s.c\n", c.c_str()); return false; }
-        auto setup = [&](int otype) {   /* -nostdinc: only the headers below */
+        auto setup = [&](int otype) {   /* -nostdinc: only the headers below (and, on Linux, the system's libc) */
             TCCState *s = T.nw();
             T.errf(s, nullptr, tcc_error); T.libpath(s, tcc_path(tccdir).c_str()); T.opts(s, "-w -nostdinc");
-            T.inc(s, incdir.c_str()); T.inc(s, (tcc_path(tccdir) + "include").c_str()); T.otype(s, otype);
+            T.inc(s, incdir.c_str()); T.inc(s, (tcc_path(tccdir) + "include").c_str());
+#ifdef __linux__
+            /* the Windows bundle carries its libc headers inside tcc/include; on Linux psp_rt.h
+               includes the system's stdint/string/math, so point at them (-nostdinc above only
+               drops TinyCC's own configured defaults; these paths are added, not substituted) */
+            T.inc(s, "/usr/include");
+            T.inc(s, "/usr/include/x86_64-linux-gnu");
+#endif
+            T.otype(s, otype);
             if (trace) T.def(s, "PSP_TRACE", "1");
             if (ftrace) T.def(s, "TF_FTRACE", "1");   /* bisection tool only (TF_FTRACE_FILE): it makes every function entry and every guest store a call */
             return s;
@@ -172,7 +188,10 @@ static void jit_selftest(void) {
     static const char *src = "#include \"psp_rt.h\"\nint selftest(float *v, int n, int *out) { for (int i = 0; i < n; i++) for (int m = 0; m < 4; m++) out[i * 4 + m] = f2i_(v[i], m); return 0; }\n";
     TCCState *s = T.nw(); T.errf(s, nullptr, tcc_error); T.opts(s, "-w -nostdinc"); T.otype(s, 1);
     std::string incdir = getenv("TF_JIT_INC") ? getenv("TF_JIT_INC") : tcc_path(exe_dir()) + "include"; T.inc(s, incdir.c_str());
-    std::wstring tccdir = _wgetenv(L"TF_JIT_TCC") ? _wgetenv(L"TF_JIT_TCC") : exe_dir() + L"tcc\\"; T.libpath(s, tcc_path(tccdir).c_str()); T.inc(s, (tcc_path(tccdir) + "include").c_str());
+    std::wstring tccdir = _wgetenv(L"TF_JIT_TCC") ? _wgetenv(L"TF_JIT_TCC") : exe_dir() + L"tcc" TF_SEP; T.libpath(s, tcc_path(tccdir).c_str()); T.inc(s, (tcc_path(tccdir) + "include").c_str());
+#ifdef __linux__
+    T.inc(s, "/usr/include"); T.inc(s, "/usr/include/x86_64-linux-gnu");   /* as setup() above: the system libc headers psp_rt.h includes */
+#endif
     T.addsym(s, "__builtin_clz", (const void *)jit_clz); T.addsym(s, "__builtin_bswap32", (const void *)jit_bswap32); T.addsym(s, "isunordered", (const void *)jit_isunordered);
     T.addsym(s, "tf_nearbyint", (const void *)jit_nearbyint); T.addsym(s, "tf_sqrtf", (const void *)jit_sqrtf); T.addsym(s, "tf_floor", (const void *)jit_floor); T.addsym(s, "tf_ceil", (const void *)jit_ceil); T.addsym(s, "tf_trunc", (const void *)jit_trunc);
     if (T.cstr(s, src) < 0 || T.reloc(s, (void *)1) < 0) { fprintf(stderr, "[jit] selftest nao compilou\n"); return; }

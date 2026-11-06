@@ -149,7 +149,7 @@ static int64_t do_dopen(const std::string &path) {
     } else if (dev == "ms0" || dev == "fatms") {
         WIN32_FIND_DATAA fd; HANDLE h = FindFirstFileA((host_path(rest) + "/*").c_str(), &fd);
         if (h == INVALID_HANDLE_VALUE) return ERR_NOENT;
-        do { f.ents.push_back({fd.cFileName, (fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) != 0, fd.nFileSizeLow}); } while (FindNextFileA(h, &fd));
+        do { f.ents.push_back({fd.cFileName, (fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) != 0, uint32_t(fd.nFileSizeLow)}); } while (FindNextFileA(h, &fd));
         FindClose(h);
     } else return ERR_NOENT;
     f.serial = ++g_serial;

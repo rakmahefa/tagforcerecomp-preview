@@ -20,10 +20,10 @@ static std::string read_text(const std::wstring &path) {
 }
 static bool file_exists(const std::wstring &p) { DWORD a = GetFileAttributesW(p.c_str()); return a != INVALID_FILE_ATTRIBUTES && !(a & FILE_ATTRIBUTE_DIRECTORY); }
 
-std::wstring code_dir(const std::string &id) { return exe_dir() + L"gen\\" + (is_eu(id) ? L"" : compact_id(id) + L"\\"); }
+std::wstring code_dir(const std::string &id) { return exe_dir() + L"gen" TF_SEP + (is_eu(id) ? L"" : compact_id(id) + TF_SEP); }
 
 /* the stamp ties the generated code to the translator that wrote it (tools/translator_version.txt) and to the game version */
-static std::string stamp_want(const std::string &id) { return read_text(exe_dir() + L"tools\\translator_version.txt") + "|" + (id.empty() ? "ULES-00600" : id); }
+static std::string stamp_want(const std::string &id) { return read_text(exe_dir() + L"tools" TF_SEP L"translator_version.txt") + "|" + (id.empty() ? "ULES-00600" : id); }
 bool code_ready(const std::string &id) {
     std::wstring d = code_dir(id);
     return file_exists(d + L"modulos.tsv") && read_text(d + L"translated.stamp") == stamp_want(id);
@@ -31,10 +31,10 @@ bool code_ready(const std::string &id) {
 
 bool code_prepare(const std::string &id, const std::wstring &data, void (*cb)(double, const wchar_t *, void *), void *ctx, std::wstring *err) {
     auto fail = [&](const std::wstring &m) { if (err) *err = m; fprintf(stderr, "[prepare] %ls\n", m.c_str()); return false; };
-    std::wstring tools = exe_dir() + L"tools\\", py, tr = tools + L"translator\\", script = tr + L"build_modules.py";
+    std::wstring tools = exe_dir() + L"tools" TF_SEP, py, tr = tools + L"translator" TF_SEP, script = tr + L"build_modules.py";
 #ifdef __linux__
     py = L"python3";   /* the Linux payload runs the translator with the system Python */
-    if (!file_exists(script)) return fail(L"The translator is missing (tools\\translator\\build_modules.py): extract the whole release.");
+    if (!file_exists(script)) return fail(L"The translator is missing (tools" TF_SEP L"translator" TF_SEP L"build_modules.py): extract the whole release.");
 #else
     py = tools + L"python\\python.exe";
     if (!file_exists(py) || !file_exists(script)) return fail(L"The translator is missing (tools\\python, tools\\translator\\build_modules.py): extract the whole release zip.");

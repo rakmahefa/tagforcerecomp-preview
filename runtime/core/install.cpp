@@ -49,7 +49,7 @@ bool iso_install(const wchar_t *iso, const wchar_t *dest, InstProgress cb, void 
     std::map<uint32_t, std::string> by_lba; std::vector<std::pair<uint32_t, uint32_t>> covered;   /* lba -> primeiro caminho; (lba, setores) */
     std::vector<uint8_t> buf(4u << 20); uint64_t done = 0; int lastpct = -1;
     for (auto &it : items) {
-        std::wstring wp = to_wide(it.path); for (auto &c : wp) if (c == L'/') c = L'\\';
+        std::wstring wp = to_wide(it.path);   /* forward slashes: _wfopen takes them on Windows, std::filesystem needs them on Linux */
         if (it.dir) { fs::create_directories(root / wp, ec); continue; }
         if (by_lba.count(it.lba)) { continue; }   /* mesmo arquivo com dois nomes: so grava uma copia */
         by_lba[it.lba] = it.path; covered.push_back({it.lba, (it.size + 2047) / 2048});
