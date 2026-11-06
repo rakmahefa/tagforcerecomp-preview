@@ -6,23 +6,34 @@ zip, but as a tar.gz with the DQ8Recomp-style layout:
       tagforce-launcher   the launcher (Your disc, Tools, Options, Build, Play)
       libSDL2-2.0.so.0    SDL2, bundled (zlib license); the system one is used if present
       payload/
-        source/           this repository, tracked files only (git archive)
+        source/           this repository, tracked files only (git archive), with the
+                          prebuilt/ additions below already inside it
         payload.json      version and what the payload holds
         README.md         what the payload is, and what is not in it yet
       LICENSE, THIRD_PARTY.md, README.md, README-LINUX.txt
 
-    python3 tools/launcher/package_linux.py [--out gen/linux] [--version 0.6.0] [--no-build]
+    Two things the player's machine must not need to build ride in the payload's
+    source/prebuilt/: the Vulkan shaders, already compiled (tracked in git as
+    prebuilt/gpu_spv.h), and TinyCC 0.9.27 (libtcc.so + libtcc1.a + include/),
+    built here from the official source by tools/build_tcc_linux.sh - on the
+    CI runner that is the oldest supported glibc, so the .so runs everywhere.
+    tools/build_linux.sh prefers that copy over compiling TinyCC locally.
+
+    python3 tools/launcher/package_linux.py [--out gen/linux] [--version 0.6.0]
+                                           [--no-build] [--no-tcc]
 
 The payload carries NO game data (checked) and no game code: the launcher
 copies the files from the player's own ISO, like the Windows release. Needs:
-g++, SDL2, git (build.sh fetches Dear ImGui once); the tree must be committed,
-because the payload's source is `git archive HEAD`.
+g++, make, SDL2, git (build.sh fetches Dear ImGui once), curl or wget (the
+TinyCC source); the tree must be committed, because the payload's source is
+`git archive HEAD`.
 """
 import argparse
 import glob
 import hashlib
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -54,11 +65,45 @@ def sdl2_library():
     sys.exit('libSDL2-2.0.so.0 not found: install libsdl2-2.0-0 (or libsdl2-dev) first')
 
 
+def tcc_glibc_ceiling(library):
+    """The newest GLIBC_x.y symbol libtcc.so needs, or ''. Above 2.35 (the
+    oldest supported runner) the payload would not run on older distributions,
+    which is worth saying loudly instead of shipping a silent dlopen failure."""
+    try:
+        out = subprocess.run(['objdump', '-T', library], capture_output=True, text=True).stdout
+    except OSError:
+        return ''
+    versions = [v for v in re.findall(r'GLIBC_[0-9]+\.[0-9]+', out)]
+    return max(versions, key=lambda v: tuple(int(x) for x in v[6:].split('.'))) if versions else ''
+
+
+def build_prebuilt_tcc(destination):
+    """Builds TinyCC 0.9.27 (the version the game's JIT is verified with) from
+    the official source straight into the payload's source/prebuilt/tcc, so no
+    player ever compiles TinyCC or fetches anything at Build time."""
+    run(['sh', 'tools/build_tcc_linux.sh', destination])
+    library = os.path.join(destination, 'libtcc.so')
+    # tccdefs.h does not exist in 0.9.27 (it is 0.9.28+); the official release
+    # carries exactly these five own headers, and that is what the JIT needs
+    for needed in ('libtcc.so', 'libtcc1.a', 'include/stdarg.h', 'include/float.h'):
+        if not os.path.isfile(os.path.join(destination, needed)):
+            sys.exit('the TinyCC build left %s missing' % needed)
+    version = subprocess.run(['strings', '-a', library], capture_output=True, text=True).stdout
+    if '0.9.27' not in version:
+        sys.exit('the built libtcc.so is not the tested 0.9.27; refusing to package it')
+    ceiling = tcc_glibc_ceiling(library)
+    if ceiling and tuple(int(x) for x in ceiling[6:].split('.')) > (2, 35):
+        print('WARNING: libtcc.so needs %s; it will not load on glibc older than that '
+              '(the official release is built on the oldest supported runner)' % ceiling)
+    print('prebuilt TinyCC 0.9.27 -> %s (glibc ceiling: %s)' % (destination, ceiling or 'unknown'))
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--out', default=os.path.join(ROOT, 'gen', 'linux'))
     parser.add_argument('--version', default=None)
     parser.add_argument('--no-build', action='store_true')
+    parser.add_argument('--no-tcc', action='store_true', help='do not build the prebuilt TinyCC into the payload')
     args = parser.parse_args()
     version = args.version or subprocess.run(['git', 'rev-parse', '--short', 'HEAD'], cwd=ROOT,
                                              capture_output=True, text=True).stdout.strip() or 'preview'
@@ -88,6 +133,14 @@ def main():
     if extract.wait() or archive.wait():
         sys.exit('git archive HEAD failed; commit the tree first')
 
+    # 3b. TinyCC 0.9.27, built from the official source into the payload: the JIT
+    #     loads it beside the game at run time, and no player should need make,
+    #     curl or a compiler that is not g++ to get it
+    if not args.no_tcc:
+        build_prebuilt_tcc(os.path.join(source, 'prebuilt', 'tcc'))
+    if not os.path.isfile(os.path.join(source, 'prebuilt', 'gpu_spv.h')):
+        sys.exit('prebuilt/gpu_spv.h is not in the tree; regenerate it (see prebuilt/README.md)')
+
     # 4. the payload's manifest and its README
     with open(os.path.join(payload, 'payload.json'), 'w', encoding='utf-8') as f:
         json.dump({
@@ -97,6 +150,7 @@ def main():
             'launcher': 'tagforce-launcher',
             'source': 'source/',
             'fonts': 'source/tools/launcher/fonts/',
+            'prebuilt': 'source/prebuilt/',
         }, f, indent=2)
         f.write('\n')
     with open(os.path.join(payload, 'README.md'), 'w', encoding='utf-8') as f:
@@ -106,6 +160,10 @@ def main():
             'Everything the Linux launcher works from, in one download:\n'
             '\n'
             '- `source/` - this repository (code, tools, documentation), as it was released;\n'
+            '- `source/prebuilt/` - what your machine must not need to build: the Vulkan\n'
+            '  shaders, already compiled (`gpu_spv.h`), and TinyCC 0.9.27 (`tcc/`, `libtcc.so`\n'
+            '  with `libtcc1.a` and its headers) that compiles the translated game code at run\n'
+            '  time - built from the official source when this package was made;\n'
             '- `payload.json` - the release this folder belongs to.\n'
             '\n'
             'It carries **no game data and no game code**: the launcher copies the files from your\n'
@@ -124,7 +182,8 @@ def main():
             '2. Drag your disc image onto the window (Yu-Gi-Oh! GX Tag Force, European release\n'
             '   ULES-00600 - your own copy), then walk the pages with Continue.\n'
             '3. Press Start building: the launcher copies the game files, translates the game\n'
-            '   code and compiles it (the Tools page lists the packages your distribution needs),\n'
+            '   code and compiles it (the Tools page lists the packages your distribution needs;\n'
+            '   the shader compiler and TinyCC already ship pre-compiled in the payload),\n'
             '   then press Play. See README-LINUX above and docs/LINUX.md for what works.\n'
             '\n'
             'Nothing from the game is included here; everything is made on your computer from\n'
@@ -138,7 +197,11 @@ def main():
     if bad:
         sys.exit('suspicious files in the package: %s' % bad)
     for needed in ('tagforce-launcher', 'libSDL2-2.0.so.0', 'payload/payload.json',
-                   'payload/source/tools/launcher/build.sh'):
+                   'payload/source/tools/launcher/build.sh',
+                   'payload/source/prebuilt/gpu_spv.h',
+                   'payload/source/prebuilt/tcc/libtcc.so',
+                   'payload/source/prebuilt/tcc/libtcc1.a',
+                   'payload/source/prebuilt/tcc/include/stdarg.h'):
         if not os.path.isfile(os.path.join(pkg, needed)):
             sys.exit('missing from the package: %s' % needed)
 

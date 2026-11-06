@@ -10,12 +10,14 @@
 # Usage: sh tools/build_linux.sh     Variables: OPT=-O1 (default -O2), JOBS=n, OUT=path,
 #   TF_SYSROOT=path (dependencies under a prepared prefix, the developer/packaging setup;
 #   default: the system's own packages), TF_TCC=path (a folder with a libtcc.so to bundle;
-#   default: compile it from the official source, once).
+#   default: the prebuilt/ the release payload carries, else compile it from source, once).
 #
-# Dependencies (Debian/Ubuntu names): build-essential python3 pkg-config glslc bzip2
-#   libsdl2-dev libavcodec-dev libavformat-dev libavutil-dev libswscale-dev libswresample-dev
-#   libpng-dev libjpeg-dev libvulkan-dev   (+ the game data, from your ISO). TinyCC (LGPL) is
-#   not packaged as a shared library: the first build compiles it from the official source.
+# Dependencies (Debian/Ubuntu names): build-essential python3 pkg-config bzip2 libsdl2-dev
+#   libavcodec-dev libavformat-dev libavutil-dev libswscale-dev libswresample-dev libpng-dev
+#   libjpeg-dev libvulkan-dev   (+ the game data, from your ISO). Two former build-time
+#   dependencies are carried ready-made in prebuilt/: the Vulkan shaders (gpu_spv.h, so glslc
+#   is only needed to recompile them) and TinyCC 0.9.27 (libtcc.so, built at package time by
+#   tools/build_tcc_linux.sh; a git checkout without a payload compiles it from source once).
 #   The stb headers are vendored in runtime/plat/stb/.
 set -e
 cd "$(dirname "$0")/.."
@@ -47,23 +49,27 @@ fi
 # ------------------------------------------------------------------ the dependency check
 MISSING=""
 for c in g++ python3 pkg-config; do command -v $c >/dev/null 2>&1 || MISSING="$MISSING $c"; done
-command -v glslc >/dev/null 2>&1 || [ -f gen/gpu_spv.h ] || MISSING="$MISSING glslc(the shader compiler)"
+# glslc only compiles the shaders to SPIR-V; the release payload carries them ready in
+# prebuilt/gpu_spv.h, so the shader compiler is not a dependency of a player's build
+command -v glslc >/dev/null 2>&1 || [ -f gen/gpu_spv.h ] || [ -f prebuilt/gpu_spv.h ] || MISSING="$MISSING glslc(the shader compiler, or the tracked prebuilt/gpu_spv.h)"
 for m in $PKGS; do pkg-config --exists $m 2>/dev/null || MISSING="$MISSING $m"; done
 if [ -n "$MISSING" ]; then
     echo "build_linux.sh: missing:$MISSING" 1>&2
-    echo "  Debian/Ubuntu: sudo apt install build-essential python3 pkg-config glslc bzip2 libsdl2-dev libavcodec-dev libavformat-dev libavutil-dev libswscale-dev libswresample-dev libpng-dev libjpeg-dev libvulkan-dev" 1>&2
-    echo "  Fedora:        sudo dnf install gcc-c++ python3 pkgconf-pkg-config glslc bzip2 SDL2-devel ffmpeg-devel libpng-devel libjpeg-devel vulkan-headers vulkan-loader-devel" 1>&2
+    echo "  Debian/Ubuntu: sudo apt install build-essential python3 pkg-config bzip2 libsdl2-dev libavcodec-dev libavformat-dev libavutil-dev libswscale-dev libswresample-dev libpng-dev libjpeg-dev libvulkan-dev" 1>&2
+    echo "  Fedora:        sudo dnf install gcc-c++ python3 pkgconf-pkg-config bzip2 SDL2-devel ffmpeg-devel libpng-devel libjpeg-devel vulkan-headers vulkan-loader-devel" 1>&2
     exit 1
 fi
 
 # ------------------------------------------------------------------ TinyCC (libtcc.so, LGPL)
 # The JIT loads libtcc.so beside the game at run time (never linked into it). The distributions
-# package a static libtcc.a only, so the shared library is built from the official source once.
-# A libtcc.so from anywhere but the official 0.9.27 (the version the Windows release uses) is
-# NEVER bundled: Arch ships a 0.9.28rc whose generated code this game was never verified with
-# (a first real boot crashed inside the recompiled BOOT with it), and whose libtcc1.a - which
-# every module link needs - hides in /usr/lib/tcc, so it was not even bundled (the player had to
-# symlink it by hand). A stale gen/linux/tcc from an older build of this script is rebuilt.
+# package a static libtcc.a only, so the release payload carries the shared library ready-made
+# in prebuilt/tcc (built at package time, on the oldest supported glibc, by the same
+# tools/build_tcc_linux.sh that a git checkout runs once here). A libtcc.so from anywhere but
+# the official 0.9.27 (the version the Windows release uses) is NEVER bundled: Arch ships a
+# 0.9.28rc whose generated code this game was never verified with (a first real boot crashed
+# inside the recompiled BOOT with it), and whose libtcc1.a - which every module link needs -
+# hides in /usr/lib/tcc, so it was not even bundled (the player had to symlink it by hand).
+# A stale gen/linux/tcc from an older build of this script is rebuilt.
 tcc_ver() { strings -a "$1" 2>/dev/null | grep -m1 -oE '0\.9\.[0-9]+'; }
 tcc_ok() { [ -f "$1/libtcc.so" ] && [ "$(tcc_ver "$1/libtcc.so")" = "0.9.27" ] && { [ -f "$1/libtcc1.a" ] || [ -f "$1/tcc/libtcc1.a" ]; }; }
 TCCDIR=""
@@ -72,6 +78,9 @@ if [ -n "$TF_TCC" ] && [ -f "$TF_TCC/libtcc.so" ]; then
 else
     if tcc_ok gen/linux/tcc; then
         TCCDIR=gen/linux/tcc
+    elif tcc_ok prebuilt/tcc; then
+        TCCDIR=prebuilt/tcc   # the payload's copy: nothing to compile, nothing to download
+        echo "TinyCC: using the pre-compiled 0.9.27 the payload carries (prebuilt/tcc)"
     else
         [ -d gen/linux/tcc ] && echo "TinyCC: the cached gen/linux/tcc is not the tested 0.9.27 with its libtcc1.a; building the official source again"
         rm -rf gen/linux/tcc
@@ -108,9 +117,13 @@ LIBS="$LIBPATHS $PKGLIBS -lz -lpthread -ldl -lm"
 
 OD=gen/linux/obj; mkdir -p $OD
 
-# the Vulkan shaders first (gpu_vulkan.cpp includes gen/gpu_spv.h)
-if ! command -v glslc >/dev/null 2>&1 && [ ! -f gen/gpu_spv.h ]; then
-  echo "build_linux.sh: glslc not found and gen/gpu_spv.h missing (install the shader compiler, or copy the header from another build)" 1>&2; exit 1
+# the Vulkan shaders first (gpu_vulkan.cpp includes gen/gpu_spv.h): compiled from
+# runtime/gpu/shaders/ when a glslc is installed, else the pre-compiled prebuilt/gpu_spv.h
+if ! command -v glslc >/dev/null 2>&1 && { [ ! -f gen/gpu_spv.h ] || [ prebuilt/gpu_spv.h -nt gen/gpu_spv.h ]; }; then
+  [ -f prebuilt/gpu_spv.h ] || { echo "build_linux.sh: glslc not found and no prebuilt/gpu_spv.h to fall back on (install the shader compiler)" 1>&2; exit 1; }
+  mkdir -p gen
+  cp prebuilt/gpu_spv.h gen/gpu_spv.h
+  echo "shaders: using the pre-compiled prebuilt/gpu_spv.h (no glslc needed)"
 fi
 if command -v glslc >/dev/null 2>&1; then python3 tools/build/spv2h.py || exit 1; fi
 GAMEID=ULES-00600

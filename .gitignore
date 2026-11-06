@@ -47,6 +47,8 @@ texturas_despejo/
 /TagForceRecomp
 /tcc/
 /include/
+# prebuilt/tcc is injected into the payload by package_linux.py at package time (binaries)
+/prebuilt/tcc/
 /tools/python/
 /tools/translator_version.txt
 /.gitattributes
