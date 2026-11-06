@@ -17,6 +17,12 @@ std::wstring code_dir(const std::string &id);   /* where the translated C code o
 bool code_ready(const std::string &id);
 bool code_prepare(const std::string &id, const std::wstring &data, void (*cb)(double, const wchar_t *, void *), void *ctx, std::wstring *err);
 const GenModule *gen_modules(unsigned *n);   /* the modules jit_init compiled */
+/* jit.cpp fills one per linked module (Linux: the code is mmapped, not in the exe): the crash report
+ * says whether a native RIP is recompiled game code or a runtime function. Untracked when the
+ * libtcc in use links internally (0.9.28rc), in which case g_jit_nranges stays 0. */
+struct TfJitRange { char name[20]; unsigned char *lo, *hi; };
+extern "C" TfJitRange g_jit_ranges[48];
+extern "C" int g_jit_nranges;
 
 void hle_register(const char *name, HleFn fn);
 struct HleReg { HleReg(const char *n, HleFn f) { hle_register(n, f); } };

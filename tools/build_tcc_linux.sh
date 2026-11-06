@@ -47,12 +47,20 @@ fi
 echo "TinyCC: building libtcc.so in $SRC (once)"
 cd "$SRC"
 [ -f Makefile ] || sh ./configure
-make -j"${JOBS:-$(nproc)}" >gen_build.log 2>&1 || { tail -20 gen_build.log 1>&2; echo "build_tcc_linux.sh: the TinyCC build failed (see $SRC/gen_build.log)" 1>&2; exit 1; }
+# not a plain "make": that also builds libtcc1.a (a FORCE target), whose bcheck.c does not compile
+# against glibc >= 2.34 - the archive is built separately below, without the bounds checker
+make -j"${JOBS:-$(nproc)}" libtcc.so tcc >gen_build.log 2>&1 || { tail -20 gen_build.log 1>&2; echo "build_tcc_linux.sh: the TinyCC build failed (see $SRC/gen_build.log)" 1>&2; exit 1; }
+# libtcc1.a: 0.9.27's bcheck.c uses __malloc_hook, which glibc >= 2.34 removed; the bounds checker
+# (-b) is never used by the game, so build the archive without bcheck.o. Without this file NOTHING
+# links: every module dies with "tcc: error: file '<dir>/libtcc1.a' not found" (0.9.27 looks for it
+# in tcc_set_lib_path's dir, which is exactly this $OUT).
+make -C lib ../libtcc1.a BCHECK_O= >gen_libtcc1.log 2>&1 || { tail -20 gen_libtcc1.log 1>&2; echo "build_tcc_linux.sh: libtcc1.a did not build (see $SRC/gen_libtcc1.log)" 1>&2; exit 1; }
+[ -f libtcc1.a ] || { echo "build_tcc_linux.sh: libtcc1.a is missing after the build" 1>&2; exit 1; }
 
 cd - >/dev/null
 mkdir -p "$OUT"
 cp -L "$SRC"/libtcc.so* "$OUT/"
-[ -f "$SRC/libtcc1.a" ] && cp -u "$SRC/libtcc1.a" "$OUT/"
+cp -u "$SRC/libtcc1.a" "$OUT/"
 mkdir -p "$OUT/include"
 cp -ru "$SRC/include/." "$OUT/include/"
 echo "TinyCC: $OUT/libtcc.so ready"

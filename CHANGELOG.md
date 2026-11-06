@@ -23,9 +23,36 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
   `include/psp_rt.h`);
 - the JIT compiles the translated modules on Linux: the paths that reach TinyCC use real
   separators, `psp_rt.h` includes the system's libc headers (the Windows bundle carries its
-  own), and `__declspec(dllimport)` is Windows-only. Known gap: the `gen/jitcache/` object
-  cache does not round-trip yet, so modules compile in memory at every start (the fallback
-  the cache was designed with);
+  own), and `__declspec(dllimport)` is Windows-only;
+- the PSP's 1 GiB address space is a `PROT_NONE` reservation with `mprotect()` commits (a Linux
+  `mmap()` never overlays an existing mapping, so the first `MEM_COMMIT`s landed elsewhere and
+  every start died with `falha ao mapear memoria`), and the `gen/jitcache/` object cache
+  round-trips: after 0.9.27 TinyCC renumbered `TCC_OUTPUT_OBJ`, so the runtime now asks the
+  library itself which output type writes an ELF `ET_REL`, validates every object it writes
+  and skips the cache when the disk is nearly full;
+- `libtcc1.a` (which every module link needs) is searched in the bundle, next to the loaded
+  `libtcc.so` and in the usual distribution spots (`/usr/lib/tcc` on Arch): TinyCC 0.9.27 opens
+  `<tcc_set_lib_path>/libtcc1.a` while 0.9.28rc looks for a bare `libtcc1.a` in the library
+  paths only (both checked). No more hand-made symlink in `/usr/lib` to start the game;
+- `tools/build_linux.sh` bundles ONLY the tested TinyCC 0.9.27 (the version the Windows release
+  uses): a system `libtcc.so` of any other version - Arch's 0.9.28rc, whose code generator this
+  game was never verified with (a first real boot crashed inside the recompiled BOOT) - is
+  refused and the official source is built instead; a stale `gen/linux/tcc` from an older build
+  is rebuilt the same way. `tools/build_tcc_linux.sh` now also builds `libtcc1.a` (without
+  `bcheck.o`, whose 0.9.27 source does not compile against glibc >= 2.34) and fails loudly when
+  it is missing instead of silently shipping a bundle nothing can link. The JIT logs the TinyCC
+  version and where it came from: `[jit] TinyCC 0.9.27 (tcc/libtcc.so)`;
+- the crash report says what actually happened: an access inside the 1 GiB PSP window prints as
+  a guest address, a NULL prints as a native null pointer (the old `end PSP 0xffff8073...` for
+  `fa - g_mem` was meaningless), the RIP is resolved to a named function of the executable
+  (`-rdynamic`) or to the JIT range of a module (the linked code is mmapped by the runtime now),
+  a correct `addr2line` hint with the real load base is printed, and the native call chain above
+  the fault is listed. `GetModuleHandle(nullptr)` returns the executable's load address (it used
+  to return a `dlopen` handle, so `exe+offset` was garbage); `TF_CRASH_TEST=1` triggers a
+  controlled crash to check all of this;
+- the watchdog only counts missing frames once the scheduler starts (a 14 s JIT compile on a
+  laptop is not a hang), and the `[iso] arquivos do jogo` line is logged once (the installed
+  folder was opened twice: the background reader thread started twice too);
 - the file installer (`--install`) and the command line work with real paths (argv values are
   no longer rewritten as Windows paths, and directory creation uses forward separators);
 - the launcher builds the game: the Build page runs `tools/build_linux.sh` (the `[n/N]` lines

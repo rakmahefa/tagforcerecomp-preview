@@ -70,6 +70,7 @@ int main(
     std::string iso;
     int argc; wchar_t **argv = CommandLineToArgvW(GetCommandLineW(), &argc);   /* argv em UTF-16: caminhos com acento */
     std::wstring data, cli_iso, cli_dest; int cli = 0;   /* cli: 1 = --install, 2 = --verify (the Portuguese spellings --instalar/--verificar/--dados still work) */
+    bool folder_open = false;   /* the installed folder was already opened above: opening it again replays the "[iso] ... second plano" line and restarts the background reader */
     for (int i = 1; i < argc; i++) {
         if (!wcscmp(argv[i], L"--iso") && i + 1 < argc) iso = to_utf8(argv[++i]);
         else if ((!wcscmp(argv[i], L"--data") || !wcscmp(argv[i], L"--dados")) && i + 1 < argc) data = argv[++i];
@@ -88,7 +89,7 @@ int main(
         fprintf(stderr, "[instalar] %s%s%ls\n", ok ? "OK" : "FALHOU", err.empty() ? "" : ": ", err.c_str());
         diag_flush(); return ok ? 0 : 1;
     }
-    if (!data.empty() && iso_open_folder(data.c_str())) { fprintf(stderr, "[run] jogo instalado em %ls (sem ISO)\n", data.c_str()); goto started; }
+    if (!data.empty() && iso_open_folder(data.c_str())) { fprintf(stderr, "[run] jogo instalado em %ls (sem ISO)\n", data.c_str()); folder_open = true; goto started; }
     for (;;) {
         if (iso.empty()) {
             std::wstring chosen; iso = launcher_pick_iso(&chosen);
@@ -105,7 +106,7 @@ started:
     {   /* the game version is whatever was installed; its code is translated on first run (prepare.cpp) */
         if (data.empty()) data = exe_dir() + game_data_dir_name(game_id_iso(to_wide(iso)));
         std::string id = game_id_dir(data);
-        if (id.empty() || !iso_open_folder(data.c_str())) { tf_msgbox(nullptr, L"The game is not installed yet. Start the program without arguments and pick your ISO.", L"Tag Force Recomp", MB_ICONERROR); diag_flush(); return 1; }
+        if (id.empty() || !(folder_open || iso_open_folder(data.c_str()))) { tf_msgbox(nullptr, L"The game is not installed yet. Start the program without arguments and pick your ISO.", L"Tag Force Recomp", MB_ICONERROR); diag_flush(); return 1; }
         game_id_set_built(id);
         if (!code_ready(id)) { std::wstring err; if (!code_prepare(id, data, [](double, const wchar_t *m, void *) { fprintf(stderr, "[prepare] %ls\n", m); }, nullptr, &err)) { tf_msgbox(nullptr, err.c_str(), L"Tag Force Recomp", MB_ICONERROR); diag_flush(); return 1; } }
     }

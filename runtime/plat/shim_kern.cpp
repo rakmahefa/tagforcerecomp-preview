@@ -963,7 +963,18 @@ FARPROC GetProcAddress(HMODULE m, LPCSTR name) {
 }
 BOOL FreeLibrary(HMODULE) { return TRUE; }   /*kept open: the JIT's code lives in libtcc's memory*/
 HMODULE GetModuleHandleA(LPCSTR name) {
-    if (!name) { static void *self; if (!self) self = dlopen(nullptr, RTLD_NOW); return (HMODULE)self; }
+    if (!name) {   /* what every GetModuleHandle(nullptr) caller wants is the exe's LOAD ADDRESS:
+                      the crash handler's exe+offset, the profiler's rebasing, RegisterClass. A dlopen
+                      handle is a link_map pointer, not the base: a real crash printed
+                      "exe+0xffffd61392606811" and an addr2line hint that could not work. */
+        static void *self;
+        if (!self) {
+            Dl_info di;
+            if (dladdr((void *)&GetModuleHandleA, &di) && di.dli_fbase) self = di.dli_fbase;   /* this function lives in the exe */
+            else self = dlopen(nullptr, RTLD_NOW);
+        }
+        return (HMODULE)self;
+    }
     S so = dll_to_so(name);
     if (void *m = dlopen(so.c_str(), RTLD_NOW | RTLD_NOLOAD)) return (HMODULE)m;
     return nullptr;

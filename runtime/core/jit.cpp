@@ -20,6 +20,7 @@ static struct {
     void (*opts)(TCCState *, const char *); int (*inc)(TCCState *, const char *); void (*def)(TCCState *, const char *, const char *); int (*otype)(TCCState *, int);
     int (*cstr)(TCCState *, const char *); int (*addsym)(TCCState *, const char *, const void *); int (*reloc)(TCCState *, void *); void *(*getsym)(TCCState *, const char *);
     int (*addfile)(TCCState *, const char *); int (*outfile)(TCCState *, const char *);
+    int (*alib)(TCCState *, const char *);   /* tcc_add_library_path: where a relative libtcc1.a is searched (0.9.28rc) */
 } T;
 static std::vector<GenModule> g_jit; static std::deque<std::string> g_names; static bool g_jit_on;
 extern "C" uint32_t g_trace[1024]; extern "C" uint32_t g_trace_i, g_watch, g_watch_val;
@@ -48,7 +49,7 @@ static bool load_tcc(const std::wstring &dir) {
 #define L_(f, n) *(void **)&T.f = (void *)GetProcAddress(T.h, n); if (!T.f) return false;
     L_(nw, "tcc_new") L_(del, "tcc_delete") L_(libpath, "tcc_set_lib_path") L_(errf, "tcc_set_error_func") L_(opts, "tcc_set_options") L_(inc, "tcc_add_include_path")
     L_(def, "tcc_define_symbol") L_(otype, "tcc_set_output_type") L_(cstr, "tcc_compile_string") L_(addsym, "tcc_add_symbol") L_(reloc, "tcc_relocate") L_(getsym, "tcc_get_symbol")
-    L_(addfile, "tcc_add_file") L_(outfile, "tcc_output_file")
+    L_(addfile, "tcc_add_file") L_(outfile, "tcc_output_file") L_(alib, "tcc_add_library_path")
 #undef L_
     return true;
 }
@@ -96,6 +97,60 @@ static void drop_stale(const std::wstring &dir, const std::string &mod, const st
 }
 #ifdef __linux__
 #include <sys/statvfs.h>
+#include <sys/mman.h>
+#include <unistd.h>
+#include <dlfcn.h>
+static void tcc_error_quiet(void *, const char *) {}   /* jit_tcc_version and the TCC_OUTPUT_OBJ probe compile silently */
+/* Where the linked code of each module ended up, so a crash report can tell a native RIP inside
+ * recompiled game code apart from one inside a runtime function. 0.9.27 links into a buffer we
+ * mmap ourselves (tcc_relocate(s, NULL) is a size query there); 0.9.28rc treats NULL as
+ * TCC_RELOCATE_AUTO and links inside its own mallocs, untracked (build_linux.sh refuses to bundle
+ * a system libtcc that is not 0.9.27, but TF_JIT_TCC can still point at one). */
+TfJitRange g_jit_ranges[48];   /* declared extern "C" in hle.h */
+int g_jit_nranges = 0;
+static bool jit_link(TCCState *s, const char *mod) {
+    const int sz = T.reloc(s, nullptr);
+    if (sz == 0) return true;   /* linked inside the library's own memory (0.9.28rc): fine, just not in the table */
+    if (sz < 0) return false;
+    void *buf = mmap(nullptr, (size_t)(sz + 0xfff) & ~0xfffu, PROT_READ | PROT_WRITE | PROT_EXEC, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+    if (buf == MAP_FAILED) return T.reloc(s, (void *)1) >= 0;   /* last resort: the library allocates (as before) */
+    if (T.reloc(s, buf) < 0) { munmap(buf, sz); return false; }
+    if (g_jit_nranges < 48) {
+        TfJitRange &r = g_jit_ranges[g_jit_nranges++];
+        snprintf(r.name, sizeof r.name, "%s", mod); r.lo = (unsigned char *)buf; r.hi = r.lo + sz;
+    }
+    return true;
+}
+/* libtcc1.a: 0.9.27 opens <tcc_set_lib_path dir>/libtcc1.a; 0.9.28rc searches the library paths
+ * for a bare "libtcc1.a" and ignores set_lib_path for it (checked on both). Without it NOTHING
+ * links ("tcc: error: file 'libtcc1.a' not found"). Add every place it can be: the bundle, the
+ * directory of the loaded libtcc.so (Arch keeps it in /usr/lib/tcc) and the usual distro spots. */
+static void tcc_add_libtcc1(TCCState *s, const std::string &tccdir) {
+    std::vector<std::string> cand;
+    auto push = [&](std::string d) { for (auto &c : cand) if (c == d) return; cand.push_back(std::move(d)); };
+    push(tccdir);
+    Dl_info di;
+    if (dladdr((void *)T.nw, &di) && di.dli_fname && *di.dli_fname) {
+        std::string d = di.dli_fname; const size_t slash = d.find_last_of('/');
+        if (slash != std::string::npos) { d.resize(slash); push(d); push(d + "/tcc"); }
+    }
+    for (const char *d : {"/usr/lib/tcc", "/usr/lib64/tcc", "/usr/lib/x86_64-linux-gnu/tcc", "/usr/local/lib/tcc", "/usr/local/lib", "/usr/lib/x86_64-linux-gnu", "/usr/lib64", "/usr/lib"}) push(d);
+    for (auto &d : cand) if (!d.empty() && access((d + "/libtcc1.a").c_str(), F_OK) == 0) T.alib(s, d.c_str());
+}
+/* Which TinyCC compiled the game: the tested one is 0.9.27 (what the Windows release and the
+ * bundled tcc/ use; __TINYC__ = 0*10000+9*100+27 = 927). A system libtcc - Arch's 0.9.28rc -
+ * compiles the modules with a code generator this game was never verified with. */
+static int jit_tcc_version(const std::string &tccdir) {
+    TCCState *s = T.nw(); if (!s) return -1;
+    T.errf(s, nullptr, tcc_error_quiet); T.opts(s, "-w -nostdinc");
+    T.libpath(s, tccdir.c_str());
+    tcc_add_libtcc1(s, tccdir);
+    T.otype(s, 1);
+    int v = 0;
+    if (T.cstr(s, "int tf_tcc_ver = __TINYC__;\n") >= 0 && T.reloc(s, (void *)1) >= 0)
+        if (const int *p = (const int *)T.getsym(s, "tf_tcc_ver")) v = *p;
+    T.del(s); return v;
+}
 /* The stock TinyCC 0.9.27 that build_tcc_linux.sh ships never checks fwrite/fclose in
  * tcc_output_file: a full disk still "succeeds" and leaves an empty or truncated object,
  * which the following start rejects ("unrecognized file type") before recompiling all
@@ -113,7 +168,6 @@ static std::string jit_cache_reason(const std::wstring &cache) {
     snprintf(b, sizeof b, " (objeto vazio ou truncado apos a escrita; %llu MB livres no disco)", (unsigned long long)v.f_bavail * v.f_frsize >> 20);
     return b;
 }
-static void tcc_error_quiet(void *, const char *) {}
 /* After the 0.9.27 release TinyCC renumbered the TCC_OUTPUT_* constants (OBJ moved from 4 to 3,
  * and 4 became DLL): with a 0.9.28rc libtcc, every cached object was written as a linked shared
  * library and the next start rejected it ("unrecognized file type", all modules, every start).
@@ -147,6 +201,19 @@ bool jit_init(void) {
     if (!tccdir.empty() && tccdir.back() != TF_CSEP) tccdir += TF_CSEP;
     if (!gen.empty() && gen.back() != TF_CSEP) gen += TF_CSEP;
     if (!load_tcc(tccdir)) { fprintf(stderr, "[jit] libtcc nao encontrada em %ls\n", tccdir.c_str()); return false; }
+#ifdef __linux__
+    {   /* the log has to say what compiled the game: the tested libtcc or a system one */
+        char lib[300] = "?";
+        Dl_info di;
+        if (dladdr((void *)T.nw, &di) && di.dli_fname) snprintf(lib, sizeof lib, "%s", di.dli_fname);
+        const int v = jit_tcc_version(tcc_path(tccdir));
+        if (v > 0)
+            fprintf(stderr, "[jit] TinyCC %d.%d.%d%s (%s)%s\n", v / 10000, (v / 100) % 100, v % 100, v == 927 ? "" : "rc", lib,
+                    v == 927 ? "" : " - a versao testada e a 0.9.27; com outra, o codigo gerado pode sair errado (use o tcc/ do pacote)");
+        else
+            fprintf(stderr, "[jit] TinyCC de versao desconhecida (%s); a testada e a 0.9.27\n", lib);
+    }
+#endif
     std::string incdir = tcc_path(exe_dir()) + "include";
     if (const char *i = getenv("TF_JIT_INC")) incdir = i;
     FILE *mf = _wfopen((gen + L"modulos.tsv").c_str(), L"rb"); if (!mf) { fprintf(stderr, "[jit] sem modulos.tsv\n"); return false; }
@@ -198,6 +265,7 @@ bool jit_init(void) {
                drops TinyCC's own configured defaults; these paths are added, not substituted) */
             T.inc(s, "/usr/include");
             T.inc(s, "/usr/include/x86_64-linux-gnu");
+            tcc_add_libtcc1(s, tcc_path(tccdir));
 #endif
             T.otype(s, otype);
             if (trace) T.def(s, "PSP_TRACE", "1");
@@ -220,13 +288,13 @@ bool jit_init(void) {
             } else hits++;
             if (GetFileAttributesW(obj.c_str()) != INVALID_FILE_ATTRIBUTES) {
                 s = setup(1); add_symbols(s);
-                if (T.addfile(s, tcc_path(obj).c_str()) < 0 || T.reloc(s, (void *)1) < 0) { fprintf(stderr, "[jit] %s: cache invalido, compilando em memoria\n", c.c_str()); T.del(s); DeleteFileW(obj.c_str()); s = nullptr; }
+                if (T.addfile(s, tcc_path(obj).c_str()) < 0 || !jit_link(s, c.c_str())) { fprintf(stderr, "[jit] %s: cache invalido, compilando em memoria\n", c.c_str()); T.del(s); DeleteFileW(obj.c_str()); s = nullptr; }
             }
         }
         if (!s) {
             s = setup(1); add_symbols(s);   /* 1 = TCC_OUTPUT_MEMORY */
             if (T.cstr(s, src.c_str()) < 0) { fprintf(stderr, "[jit] erro compilando %s\n", c.c_str()); return false; }
-            if (T.reloc(s, (void *)1) < 0) { fprintf(stderr, "[jit] erro ligando %s\n", c.c_str()); return false; }   /* TCC_RELOCATE_AUTO */
+            if (!jit_link(s, c.c_str())) { fprintf(stderr, "[jit] erro ligando %s\n", c.c_str()); return false; }
         }
         auto sym = [&](const char *suf) { return T.getsym(s, (c + "_" + suf).c_str()); };
         for (const char *need : {"base", "gp", "memsz", "textsz", "datasz", "bsssz", "entry", "fns", "nfns", "imports", "nimports", "exports", "nexports"})
@@ -249,13 +317,16 @@ static void jit_selftest(void) {
     static const char *src = "#include \"psp_rt.h\"\nint selftest(float *v, int n, int *out) { for (int i = 0; i < n; i++) for (int m = 0; m < 4; m++) out[i * 4 + m] = f2i_(v[i], m); return 0; }\n";
     TCCState *s = T.nw(); T.errf(s, nullptr, tcc_error); T.opts(s, "-w -nostdinc"); T.otype(s, 1);
     std::string incdir = getenv("TF_JIT_INC") ? getenv("TF_JIT_INC") : tcc_path(exe_dir()) + "include"; T.inc(s, incdir.c_str());
-    std::wstring tccdir = _wgetenv(L"TF_JIT_TCC") ? _wgetenv(L"TF_JIT_TCC") : exe_dir() + L"tcc" TF_SEP; T.libpath(s, tcc_path(tccdir).c_str()); T.inc(s, (tcc_path(tccdir) + "include").c_str());
+    std::wstring tccdir = _wgetenv(L"TF_JIT_TCC") ? _wgetenv(L"TF_JIT_TCC") : exe_dir() + L"tcc" TF_SEP;
+    if (!tccdir.empty() && tccdir.back() != TF_CSEP) tccdir += TF_CSEP;   /* same as jit_init: TF_JIT_TCC without the trailing slash */
+    T.libpath(s, tcc_path(tccdir).c_str()); T.inc(s, (tcc_path(tccdir) + "include").c_str());
 #ifdef __linux__
     T.inc(s, "/usr/include"); T.inc(s, "/usr/include/x86_64-linux-gnu");   /* as setup() above: the system libc headers psp_rt.h includes */
+    tcc_add_libtcc1(s, tcc_path(tccdir));   /* and the same libtcc1.a paths, or the selftest cannot link either */
 #endif
     T.addsym(s, "__builtin_clz", (const void *)jit_clz); T.addsym(s, "__builtin_bswap32", (const void *)jit_bswap32); T.addsym(s, "isunordered", (const void *)jit_isunordered);
     T.addsym(s, "tf_nearbyint", (const void *)jit_nearbyint); T.addsym(s, "tf_sqrtf", (const void *)jit_sqrtf); T.addsym(s, "tf_floor", (const void *)jit_floor); T.addsym(s, "tf_ceil", (const void *)jit_ceil); T.addsym(s, "tf_trunc", (const void *)jit_trunc);
-    if (T.cstr(s, src) < 0 || T.reloc(s, (void *)1) < 0) { fprintf(stderr, "[jit] selftest nao compilou\n"); return; }
+    if (T.cstr(s, src) < 0 || !jit_link(s, "selftest")) { fprintf(stderr, "[jit] selftest nao compilou\n"); return; }
     int (*fn)(float *, int, int *) = (int (*)(float *, int, int *))T.getsym(s, "selftest");
     float v[] = {0.5f, 1.5f, 210.0f, -3.2f, 12.75f, 100000.f}; int out[24] = {};
     fn(v, 6, out);

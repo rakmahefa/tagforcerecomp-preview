@@ -7,6 +7,11 @@
 #include <string>
 #include <vector>
 #include <algorithm>
+#ifdef __linux__
+#include <dlfcn.h>
+#include <execinfo.h>
+#include <unistd.h>
+#endif
 
 uint8_t *g_mem;
 extern "C" { uint32_t g_trace[1024]; uint32_t g_trace_i; uint32_t g_watch, g_watch_val; }
@@ -38,10 +43,58 @@ void audio_out_shutdown(void);
 [[noreturn]] void host_fatal(int code) { audio_out_shutdown(); fflush(nullptr); diag_flush(); ExitProcess((UINT)code); }
 static LONG WINAPI crash_handler(EXCEPTION_POINTERS *ep) {
     uint8_t *fa = (uint8_t *)ep->ExceptionRecord->ExceptionInformation[1];
+    const DWORD64 rip = ep->ContextRecord->Rip;
+#ifdef __linux__
+    /* An access inside the 1 GiB PSP window is a guest address; anything else is a HOST pointer.
+     * The old print of (fa - g_mem) turned NULL into 0xffff8073d4000000, which told nothing. */
+    if (g_mem && fa >= g_mem && fa < g_mem + 0x40000000u)
+        fprintf(stderr, "\n[CRASH] excecao 0x%08lx, acesso em %p = endereco PSP 0x%08x\n", ep->ExceptionRecord->ExceptionCode, (void *)fa, (uint32_t)(fa - g_mem));
+    else if (!fa)
+        fprintf(stderr, "\n[CRASH] excecao 0x%08lx, acesso em (nil): ponteiro NATIVO nulo (codigo do runtime/HLE, nao um endereco do jogo)\n", ep->ExceptionRecord->ExceptionCode);
+    else
+        fprintf(stderr, "\n[CRASH] excecao 0x%08lx, acesso em %p (ponteiro do host, fora da janela de 1 GiB do PSP)\n", ep->ExceptionRecord->ExceptionCode, (void *)fa);
+    /* Which code was executing: a runtime function (HLE/decomp/shim, named - build with -rdynamic),
+     * recompiled game code (the JIT ranges jit.cpp mmapped), or a system library. */
+    {
+        char exep[300] = "TagForceRecomp";
+        if (ssize_t n = readlink("/proc/self/exe", exep, sizeof exep - 1); n > 0) exep[n] = 0;
+        Dl_info di{};
+        if (dladdr((void *)(uintptr_t)rip, &di) && di.dli_fname) {
+            const DWORD64 exe_base = (DWORD64)GetModuleHandleA(nullptr);   /* the real load address now (shim), not a dlopen handle */
+            const bool in_exe = (DWORD64)di.dli_fbase == exe_base;
+            fprintf(stderr, "RIP nativo 0x%llx em %s: %s+0x%llx\n", (unsigned long long)rip, in_exe ? "o executavel" : di.dli_fname,
+                    di.dli_sname ? di.dli_sname : "<sem simbolo>",
+                    di.dli_sname ? (unsigned long long)((uint8_t *)rip - (uint8_t *)di.dli_saddr) : (unsigned long long)((uint8_t *)rip - (uint8_t *)di.dli_fbase));
+            if (in_exe) fprintf(stderr, "addr2line -f -e %s 0x%llx\n", exep, (unsigned long long)(rip - exe_base));
+        } else {
+            int hit = -1;
+            for (int i = 0; i < g_jit_nranges; i++) if ((uint8_t *)(uintptr_t)rip >= g_jit_ranges[i].lo && (uint8_t *)(uintptr_t)rip < g_jit_ranges[i].hi) { hit = i; break; }
+            if (hit >= 0)
+                fprintf(stderr, "RIP nativo 0x%llx DENTRO do codigo JIT do modulo %s [%p..%p]\n", (unsigned long long)rip, g_jit_ranges[hit].name, (void *)g_jit_ranges[hit].lo, (void *)g_jit_ranges[hit].hi);
+            else
+                fprintf(stderr, "RIP nativo 0x%llx fora do executavel e do codigo JIT (heap/pilha do host; com libtcc 0.9.28rc o JIT liga no heap e nao e rastreavel)\n", (unsigned long long)rip);
+        }
+        /* the native call chain above the fault: HLE/decomp/shim frames (JIT frames carry no unwind data and stop it) */
+        void *bt[20];
+        const int n = backtrace(bt, 20);
+        fprintf(stderr, "pilha nativa:");
+        for (int i = 0; i < n && i < 12; i++) {
+            Dl_info d2{};
+            if (dladdr(bt[i], &d2) && d2.dli_sname)
+                fprintf(stderr, "\n  #%d %s+0x%llx", i, d2.dli_sname, (unsigned long long)((uint8_t *)bt[i] - (uint8_t *)d2.dli_saddr));
+            else if (dladdr(bt[i], &d2) && d2.dli_fname)
+                fprintf(stderr, "\n  #%d %s+0x%llx", i, d2.dli_fname, (unsigned long long)((uint8_t *)bt[i] - (uint8_t *)d2.dli_fbase));
+            else
+                fprintf(stderr, "\n  #%d %p", i, bt[i]);
+        }
+        fputc(10, stderr);
+    }
+#else
     fprintf(stderr, "\n[CRASH] excecao 0x%08lx, acesso em %p (end PSP 0x%08llx)\n", ep->ExceptionRecord->ExceptionCode,
             (void *)fa, (unsigned long long)(fa - g_mem));
     fprintf(stderr, "RIP nativo = exe+0x%llx (addr2line -f -e TagForceRecomp.exe 0x%llx)\n",
-            (unsigned long long)(ep->ContextRecord->Rip - (DWORD64)GetModuleHandleA(nullptr)), (unsigned long long)ep->ContextRecord->Rip);
+            (unsigned long long)(rip - (DWORD64)GetModuleHandleA(nullptr)), (unsigned long long)rip);
+#endif
     fprintf(stderr, "ultimas funcoes recompiladas:");
     for (uint32_t i = 0; i < 24; i++) fprintf(stderr, " %08x", g_trace[(g_trace_i - 24 + i) & 1023]);
     fprintf(stderr, "\n");
@@ -76,6 +129,11 @@ CPU *host_create(void) {
     }
     c->mem = g_mem; g_main_cpu = c; cpu_reset_vfpu(c);
     SetUnhandledExceptionFilter(crash_handler);
+    if (getenv("TF_CRASH_TEST")) {   /* diagnostics: verifies the crash report end to end (symbol names, PSP window, JIT ranges) */
+        fprintf(stderr, "[diag] TF_CRASH_TEST: desreferenciando NULL agora\n");
+        fflush(stderr);
+        volatile int *nullp = nullptr; *nullp = 1;
+    }
     if (const char *w = getenv("WATCH_ADDR")) g_watch = (uint32_t)strtoul(w, nullptr, 16);
     { extern void hooks_dev_init(void); hooks_dev_init(); }
     return c;
