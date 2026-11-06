@@ -1,0 +1,120 @@
+name: Linux launcher
+
+# The Linux launcher and its release package: an executable plus a payload,
+# like the Windows zip but as a tar.gz. Every push to master that touches the
+# launcher publishes a prerelease named after the commit; pull requests build
+# and test everything without publishing.
+on:
+  push:
+    branches: [master]
+    paths:
+      - 'tools/launcher/**'
+      - 'docs/LINUX.md'
+      - '.github/workflows/linux-launcher.yml'
+  pull_request:
+    paths:
+      - 'tools/launcher/**'
+      - 'docs/LINUX.md'
+      - '.github/workflows/linux-launcher.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: linux-launcher-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  package:
+    name: Build, test and package
+    # The oldest supported runner, so the launcher runs on older glibc too.
+    runs-on: ubuntu-22.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Install the build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libsdl2-dev xvfb
+
+      - name: Name the build after its commit
+        run: |
+          echo "VERSION=${GITHUB_SHA::7}" >> "$GITHUB_ENV"
+          echo "ARCHIVE=TagForceRecomp-${GITHUB_SHA::7}-Linux-x86_64.tar.gz" >> "$GITHUB_ENV"
+
+      - name: Build the launcher
+        run: sh tools/launcher/build.sh
+
+      - name: Recognise a disc (synthetic ULES-00600 image, no game data)
+        run: |
+          python3 tools/launcher/test/make_test_iso.py test.iso
+          ./build/tagforce-launcher --check-disc test.iso | tee disc.txt
+          grep -q 'game id: ULES-00600' disc.txt
+          grep -q 'supported: yes' disc.txt
+
+      - name: Draw every page (smoke test, then screenshots)
+        run: |
+          xvfb-run -a ./build/tagforce-launcher --smoke
+          xvfb-run -a ./build/tagforce-launcher --preview shots
+          ls -l shots
+          for page in disc-empty disc-ready tools-ready tools-missing options building build-failed play; do
+            [ -s "shots/$page.png" ] || { echo "::error::shots/$page.png is missing"; exit 1; }
+            [ "$(head -c 8 "shots/$page.png" | od -An -tx1 | tr -d ' \n')" = "89504e470d0a1a0a" ] || {
+              echo "::error::shots/$page.png is not a PNG"; exit 1; }
+          done
+
+      - name: Package the release (launcher + payload)
+        run: python3 tools/launcher/package_linux.py --version "$VERSION"
+
+      - name: Check the package's shape
+        run: |
+          tar -tzf "gen/linux/$ARCHIVE" | tee files.txt
+          grep -q '^TagForceRecomp/tagforce-launcher$' files.txt
+          grep -q '^TagForceRecomp/libSDL2-2.0.so.0$' files.txt
+          grep -q '^TagForceRecomp/payload/payload.json$' files.txt
+          grep -q '^TagForceRecomp/payload/source/tools/launcher/build.sh$' files.txt
+          grep -q '^TagForceRecomp/README-LINUX.txt$' files.txt
+          ! grep -Eq '\.(iso|prx|pbp|at3|pmf)$' files.txt
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: linux-launcher
+          path: |
+            gen/linux/*.tar.gz
+            shots/
+          retention-days: 14
+          compression-level: 0
+
+  release:
+    name: Publish the prerelease
+    needs: package
+    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/master'
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: linux-launcher
+          path: release
+
+      - name: Publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          version="${GITHUB_SHA::7}"
+          cd release
+          sha256sum -- *.tar.gz > SHA256SUMS.txt
+          if gh release view "linux-$version" --json targetCommitish >/dev/null 2>&1; then
+            gh release upload "linux-$version" TagForceRecomp-*.tar.gz SHA256SUMS.txt --clobber
+          else
+            gh release create "linux-$version" TagForceRecomp-*.tar.gz SHA256SUMS.txt \
+              --target "$GITHUB_SHA" --prerelease \
+              --title "Linux launcher $version" \
+              --notes "The Linux launcher and its payload, built from $version. See docs/LINUX.md in the repository: extract, run ./tagforce-launcher, drop your disc image (ULES-00600) on the window. Prerelease: the Windows runtime does not build on Linux yet; the launcher prepares the game files and the translated code."
+          fi
