@@ -46,7 +46,10 @@ fi
 
 echo "TinyCC: building libtcc.so in $SRC (once)"
 cd "$SRC"
-[ -f Makefile ] || sh ./configure
+# not [ -f Makefile ]: the official tarball ships one (a 2017 file tracked in git) whose first
+# rule is "config.mak: Please run ./configure." - configure is what writes config.mak, so that
+# is the file to gate on (a tree configured by an earlier run keeps it; make alone never does)
+[ -f config.mak ] || sh ./configure
 # not a plain "make": that also builds libtcc1.a (a FORCE target), whose bcheck.c does not compile
 # against glibc >= 2.34 - the archive is built separately below, without the bounds checker
 make -j"${JOBS:-$(nproc)}" libtcc.so tcc >gen_build.log 2>&1 || { tail -20 gen_build.log 1>&2; echo "build_tcc_linux.sh: the TinyCC build failed (see $SRC/gen_build.log)" 1>&2; exit 1; }
