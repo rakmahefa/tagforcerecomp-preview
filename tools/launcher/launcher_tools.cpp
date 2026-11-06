@@ -1,8 +1,10 @@
-// launcher_tools.cpp - looks for the tools the Linux build pipeline needs.
+// launcher_tools.cpp - looks for the tools and libraries the Linux build needs.
 //
-// Nothing is bundled yet (the Windows release carries its own Python and
-// TinyCC): on Linux the Tools page checks g++, CMake, Ninja, Python 3 and
-// FFmpeg, and shows the distribution's install command to copy.
+// Nothing is bundled (the Windows release carries its own Python and TinyCC): on Linux the
+// Tools page checks what tools/build_linux.sh compiles and links against - g++, Python 3,
+// the shader compiler, SDL2, the FFmpeg/PNG/JPEG libraries, Vulkan - and shows the
+// distribution's install command to copy. TinyCC is the exception: no distribution packages
+// its shared library, so the first Build compiles it from the official source.
 #include "launcher_tools.h"
 
 #include <cstdio>
@@ -35,6 +37,22 @@ std::string versionOf(const char *tool, const char *flag = "--version") {
     return line;
 }
 
+// The version `pkg-config --modversion module` prints (the -dev package's library version).
+std::string modVersion(const char *module) {
+    const auto [code, line] = probe(std::string("timeout 5 pkg-config --modversion ") + module + " 2>/dev/null");
+    if (code != 0 || line.empty())
+        return {};
+    return line;
+}
+
+// "found" when any of the files exists, empty when none does.
+std::string presentAt(const char *files) {
+    const auto [code, line] = probe(std::string("timeout 5 sh -c 'ls ") + files + " 2>/dev/null | head -1'");
+    if (code != 0 || line.empty())
+        return {};
+    return "found";
+}
+
 } // namespace
 
 bool ToolReport::ready() const {
@@ -46,29 +64,39 @@ bool ToolReport::ready() const {
 
 ToolReport checkTools() {
     ToolReport report;
-    const auto add = [&](const char *name, const char *purpose, const std::string &version, bool optional = false) {
+    const auto add = [&](const char *name, const char *purpose, const std::string &version, bool optional = false,
+                         const char *problemWhenMissing = nullptr) {
         ToolCheck check;
         check.name = name;
         check.purpose = purpose;
         check.version = version;
         check.found = !version.empty();
         check.optional = optional;
+        if (!check.found)
+            check.problem = "Not found. " +
+                            std::string(problemWhenMissing ? problemWhenMissing
+                                                           : (optional ? "The game works without it."
+                                                                       : "Install it and press Check again."));
         report.tools.push_back(check);
     };
     add("C++ compiler", "Compiles the game", versionOf("g++"));
-    add("CMake", "Configures the runtime build", versionOf("cmake"));
-    add("Ninja", "Runs the build", versionOf("ninja"));
     add("Python 3", "Copies the disc and translates the game code", versionOf("python3"));
-    add("FFmpeg", "Plays the movies and music; without it they stay silent", versionOf("ffmpeg", "-version"), true);
-    // Wait for a missing optional tool to explain itself on the page.
-    for (ToolCheck &tool : report.tools)
-        if (!tool.found)
-            tool.problem = "Not found. " + std::string(tool.optional ? "The game works without it." : "Install it and press Check again.");
+    add("Shader compiler", "Compiles the Vulkan shaders (glslc)", versionOf("glslc"));
+    add("SDL2", "Window, input and audio", modVersion("sdl2"));
+    add("FFmpeg libraries", "Play the movies and music", modVersion("libavcodec"));
+    add("PNG/JPEG codecs", "Read images and textures", modVersion("libpng"));
+    add("Vulkan", "Draws the game (or the software renderer)", modVersion("vulkan"));
+    add("TinyCC", "Compiles the translated game code at run time",
+        presentAt("/usr/lib/x86_64-linux-gnu/libtcc.so /usr/lib64/libtcc.so /usr/local/lib/libtcc.so"), true,
+        "The first Build compiles it from the official source (needs make, and curl or wget).");
     if (!report.ready()) {
-        report.installCommand = "sudo apt install build-essential cmake ninja-build python3 ffmpeg";
+        report.installCommand =
+            "sudo apt install build-essential python3 pkg-config glslc bzip2 libsdl2-dev libavcodec-dev "
+            "libavformat-dev libavutil-dev libswscale-dev libswresample-dev libpng-dev libjpeg-dev libvulkan-dev";
         report.instructions =
             "Your distribution's packages have them all. Copy the line below into a terminal, enter your password, "
-            "and press Check again when it finishes. (On Fedora the names are gcc-c++ cmake ninja-build python3 ffmpeg.)";
+            "and press Check again when it finishes. (On Fedora: sudo dnf install gcc-c++ python3 pkgconf-pkg-config "
+            "glslc bzip2 SDL2-devel ffmpeg-devel libpng-devel libjpeg-devel vulkan-headers vulkan-loader-devel.)";
     }
     return report;
 }

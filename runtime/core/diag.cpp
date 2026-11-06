@@ -14,6 +14,9 @@
 #include <filesystem>
 #include <mmsystem.h>
 #include <tlhelp32.h>
+#ifdef __linux__
+#include <sys/utsname.h>
+#endif
 #include <psapi.h>
 #include <vector>
 #include <map>
@@ -103,13 +106,22 @@ static void log_sysinfo(void) {
     RegGetValueA(HKEY_LOCAL_MACHINE, "HARDWARE\\DESCRIPTION\\System\\CentralProcessor\\0", "ProcessorNameString", RRF_RT_REG_SZ, nullptr, cpu, &sz);
     SYSTEM_INFO si; GetNativeSystemInfo(&si);
     MEMORYSTATUSEX ms = {}; ms.dwLength = sizeof ms; GlobalMemoryStatusEx(&ms);
+#ifdef __linux__
+    {   /* uname instead of the registry/ntdll dance */
+        struct utsname u;
+        if (uname(&u) == 0) fprintf(stderr, "[sys] CPU: %s, %u logical processors; RAM %.1f GB; Linux %s (%s)\n", cpu, (unsigned)si.dwNumberOfProcessors, ms.ullTotalPhys / 1073741824.0, u.release, u.machine);
+        else fprintf(stderr, "[sys] CPU: %s, %u logical processors; RAM %.1f GB; Linux\n", cpu, (unsigned)si.dwNumberOfProcessors, ms.ullTotalPhys / 1073741824.0);
+    }
+#else
     unsigned major = 0, minor = 0, build = 0;
     typedef LONG (WINAPI *RtlGetVersionFn)(OSVERSIONINFOW *);
     HMODULE nt = GetModuleHandleW(L"ntdll.dll");
     if (RtlGetVersionFn rgv = nt ? (RtlGetVersionFn)GetProcAddress(nt, "RtlGetVersion") : nullptr) { OSVERSIONINFOW v = {}; v.dwOSVersionInfoSize = sizeof v; if (!rgv(&v)) { major = v.dwMajorVersion; minor = v.dwMinorVersion; build = v.dwBuildNumber; } }
     fprintf(stderr, "[sys] CPU: %s, %u logical processors; RAM %.1f GB; Windows %u.%u build %u\n", cpu, (unsigned)si.dwNumberOfProcessors, ms.ullTotalPhys / 1073741824.0, major, minor, build);
+#endif
     SYSTEM_POWER_STATUS ps = {};
     if (GetSystemPowerStatus(&ps)) fprintf(stderr, "[sys] power: %s, battery %s%u%%\n", ps.ACLineStatus == 1 ? "plugged in" : ps.ACLineStatus == 0 ? "ON BATTERY" : "unknown", ps.BatteryFlag == 128 ? "none " : "", ps.BatteryLifePercent == 255 ? 0u : (unsigned)ps.BatteryLifePercent);
+#ifndef __linux__
     char plan[64] = "?"; sz = sizeof plan;
     if (RegGetValueA(HKEY_LOCAL_MACHINE, "SYSTEM\\CurrentControlSet\\Control\\Power\\User\\PowerSchemes", "ActivePowerScheme", RRF_RT_REG_SZ, nullptr, plan, &sz) == ERROR_SUCCESS) {
         const char *nm = !_stricmp(plan, "381b4222-f694-41f0-9685-ff5bb260df2e") ? " (Balanced)" : !_stricmp(plan, "8c5e7fda-e8bf-4a96-9a85-a6e23a8c635c") ? " (High performance)" : !_stricmp(plan, "a1841308-3541-4fab-bc81-f71556f20b4a") ? " (Power saver)" : "";
@@ -120,6 +132,7 @@ static void log_sysinfo(void) {
     const UINT nd = waveOutGetNumDevs();
     for (UINT i = 0; i < nd; i++) { WAVEOUTCAPSA c = {}; if (waveOutGetDevCapsA(i, &c, sizeof c) == MMSYSERR_NOERROR) fprintf(stderr, "[sys] audio out %u: %s\n", i, c.szPname); }
     fprintf(stderr, "[sys] audio out devices: %u (the game uses the system default)\n", nd);
+#endif
 }
 /* Resource monitor, once per second (only with diag.txt / TF_LAT_DEBUG): CPU use of the process and of its busiest threads, memory, page faults,
  * free system RAM and the real CPU clock. Answers "is this CPU-, RAM- or clock-bound" from a player's log. */

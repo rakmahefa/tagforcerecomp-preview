@@ -47,7 +47,17 @@ static bool acquire_save_lock() {
     return false;
 }
 
-int main() {
+#ifdef __linux__
+extern "C" void tf_shim_set_argv(int argc, char **argv);   /* shim_kern: GetCommandLineW/CommandLineToArgvW */
+#endif
+int main(
+#ifdef __linux__
+    int argc_, char **argv_
+#endif
+) {
+#ifdef __linux__
+    tf_shim_set_argv(argc_, argv_);
+#endif
     /* executavel de janela (sem console atras do jogo); se foi aberto de um terminal sem redirecionar a saida, usa o console dele */
     if (!GetStdHandle(STD_ERROR_HANDLE) && AttachConsole(ATTACH_PARENT_PROCESS)) {
         HANDLE h = CreateFileW(L"CONOUT$", GENERIC_WRITE, FILE_SHARE_WRITE, nullptr, OPEN_EXISTING, 0, nullptr);

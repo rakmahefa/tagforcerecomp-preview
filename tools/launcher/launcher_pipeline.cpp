@@ -4,12 +4,13 @@
 //   Unpack the source     payload/source (or the checkout) -> <workspace>/source
 //   Copy the game files   python3 tools/game/extrair_jogo.py <iso> <workspace>/jogo
 //   Translate the code    TF_JOGO=<workspace>/jogo python3 tools/translator/build_modules.py
-//   Compile the runtime   cmake/ninja over <workspace>/source, once it builds on Linux
+//   Compile the runtime   JOBS=n sh tools/build_linux.sh (the [n/N] lines are the progress bar)
 //
-// The last stage is honest about this preview: without a Linux CMakeLists it
-// stops with exit code 42, which reads as "not yet", not as a failure to fix.
+// The last stage leaves the game in <workspace>/source: the executable, TinyCC and the
+// header the generated code includes, beside each other, exactly where Play looks for them.
 #include "launcher_pipeline.h"
 
+#include <algorithm>
 #include <chrono>
 #include <cctype>
 #include <cerrno>
@@ -301,8 +302,13 @@ void Pipeline::run(PipelineOptions options) {
             }
         }
         int done = 0;
+        // the stamp says this gen/ belongs to this payload's translator, so the game itself does
+        // not translate again on first Play (prepare.cpp compares it, then compiles nothing)
         const std::string command = "cd " + q(sourceCopy) + " && TF_JOGO=" + q(options.workspace / "jogo") +
-                                    " python3 tools/translator/build_modules.py";
+                                    " python3 tools/translator/build_modules.py && "
+                                    "printf '%s|' \"$(cat tools/translator_version.txt 2>/dev/null)\" > gen/translated.stamp && "
+                                    "printf '%s\\n' " +
+                                    q(disc.gameId) + " >> gen/translated.stamp";
         int code = -1;
         {
             double progress = total > 0 ? 0.0 : -1.0;
@@ -326,34 +332,51 @@ void Pipeline::run(PipelineOptions options) {
     }
     finishStage(Stage::TranslateCode, true, "generated C in " + (sourceCopy / "gen").string());
 
-    // 5. Compile the runtime. This preview stops here until the runtime's
-    //    Windows-only sources grow a Linux build: exit 42 is "not on Linux
-    //    yet", and everything the player built so far stays ready to use.
+    // 5. Compile the runtime: the same build a manual `sh tools/build_linux.sh` runs, with
+    //    the Options page's job count; the [n/N] lines it prints drive the progress bar, and
+    //    it installs the game into <workspace>/source (TagForceRecomp, tcc/, include/).
     beginStage(Stage::CompileRuntime);
     {
-        const std::string command =
-            "cd " + q(sourceCopy) + " && if [ ! -f CMakeLists.txt ]; then echo 'no Linux build of the runtime yet'; "
-                                    "exit 42; fi && cmake -S . -B build-linux -G Ninja -DCMAKE_BUILD_TYPE=Release && "
-                                    "cmake --build build-linux -j " +
-            std::to_string(options.jobs > 0 ? options.jobs : 2);
-        const int code = shell(command, Stage::CompileRuntime);
-        if (code == 42) {
-            finishStage(Stage::CompileRuntime, false, "not on Linux yet",
-                        "The runtime is Windows-only for now: the translated code and the game files are ready in " +
+        if (!std::filesystem::is_regular_file(sourceCopy / "tools/build_linux.sh")) {
+            // a payload older than the Linux runtime: everything it built stays ready to use
+            finishStage(Stage::CompileRuntime, false, "not in this payload",
+                        "This payload predates the Linux runtime: the translated code and the game files are ready in " +
                             options.workspace.string() + ", and Play says what comes next.");
             m_gap = true;
             m_running = false;
             return;
         }
+        int total = 0, done = 0;
+        double progress = -1.0;
+        const std::string command = "cd " + q(sourceCopy) + " && JOBS=" +
+                                    std::to_string(options.jobs > 0 ? options.jobs : 2) + " sh tools/build_linux.sh";
+        const int code = shell(command, Stage::CompileRuntime, [&](const std::string &text) {
+            // "[12/57] runtime/core/kernel.cpp" is one compiled source of the current run
+            if (text.size() > 3 && text[0] == '[') {
+                const size_t slash = text.find('/'), close = text.find(']', 1);
+                if (slash != std::string::npos && close != std::string::npos && slash < close) {
+                    const int n = atoi(text.c_str() + 1), of = atoi(text.c_str() + slash + 1);
+                    if (n > 0 && of > 0) {
+                        ++done;
+                        if (of > total)
+                            total = of;
+                        setProgress(Stage::CompileRuntime, std::min(1.0, double(done) / std::max(1, total)),
+                                    std::to_string(done) + " of " + std::to_string(total) + " sources");
+                        return;
+                    }
+                }
+            }
+            setProgress(Stage::CompileRuntime, progress, text.substr(0, 72));
+        });
         if (m_cancel.load() || code != 0) {
             finishStage(Stage::CompileRuntime, false, code == -1 ? "stopped" : "the compiler stopped early");
             if (!m_cancel.load())
-                fail("Compiling the runtime failed; the log shows why.");
+                fail("Compiling the runtime failed; the log shows why (the Tools page lists the packages it needs).");
             m_running = false;
             return;
         }
     }
-    finishStage(Stage::CompileRuntime, true, "into " + (sourceCopy / "build-linux").string());
+    finishStage(Stage::CompileRuntime, true, "the game is in " + sourceCopy.string());
 
     std::lock_guard lock(m_mutex);
     m_succeeded = true;

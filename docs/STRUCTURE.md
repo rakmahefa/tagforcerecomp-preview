@@ -22,6 +22,7 @@ name (`#include "gpu.h"`).
 | Folder | What it holds |
 |---|---|
 | `core/` | Program start (`main_run`), the HLE kernel, ISO and installed-folder access, game installation and first-run translation (`prepare`), the TinyCC JIT that compiles the translated C, the module loader, diagnostics, `psp_rt.h` (the one header the generated code includes) |
+| `plat/` | Linux only (not built on Windows): the Win32 compatibility layer - `windows.h` and the other header shims, the POSIX kernel/files/SEH half, the SDL2 window manager and message queue, the software GDI and GDI+ with stb_truetype fonts, XInput/DirectInput on SDL controllers |
 | `hle/` | High-level emulation of the PSP system calls: graphics engine (`hle_ge`), audio, MPEG video, fonts, I/O, utility dialogs, and the VFPU math unit |
 | `gpu/` | Renderers (`gpu_d3d11`, `gpu_vulkan`, software `gfx`), the 60/120 FPS interpolation (`interp`), frame pacing, texture replacement and BC7 compression, the high-resolution font, GLSL `shaders/`, and the graphics diagnostic capture include |
 | `ui/` | The window (`display`), the launcher, menus, mouse and text input, the dark theme, and the mod panels |

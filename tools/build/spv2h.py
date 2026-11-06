@@ -2,7 +2,7 @@
 import subprocess, sys, os, struct, glob
 root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 out = os.path.join(root, 'gen', 'gpu_spv.h'); os.makedirs(os.path.dirname(out), exist_ok=True)
-glslc = 'C:/msys64/ucrt64/bin/glslc.exe'
+glslc = os.environ.get('GLSLC', 'glslc' if sys.platform.startswith('linux') or not os.path.exists('C:/msys64/ucrt64/bin/glslc.exe') else 'C:/msys64/ucrt64/bin/glslc.exe')
 src = sorted(glob.glob(os.path.join(root, 'runtime', 'gpu', 'shaders', '*.*')))
 if os.path.exists(out) and os.path.getmtime(out) >= max(os.path.getmtime(f) for f in src):
     sys.exit(0)

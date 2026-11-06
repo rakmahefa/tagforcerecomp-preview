@@ -29,7 +29,7 @@ public:
     bool running() const { return m_running.load(); }
     bool started() const { return m_started.load(); }
     bool succeeded() const { return m_succeeded; }
-    bool stoppedAtGap() const { return m_gap.load(); } // ended at "not on Linux yet"
+    bool stoppedAtGap() const { return m_gap.load(); } // ended at "not in this payload"
     std::string error() const;
     std::array<StageState, kStageCount> stages() const;
     std::vector<std::string> log(size_t limit) const;

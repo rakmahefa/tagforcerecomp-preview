@@ -116,7 +116,11 @@ static bool plugin_start(Plugin *p, int (*init)(const TfModApi *)) {
 void plugins_load(void) {
     std::vector<std::pair<std::string, std::wstring>> mods; mods_plugin_dirs(mods);
     for (auto &m : mods) {
+#ifdef __linux__
+        wchar_t full[MAX_PATH * 2]; const std::wstring rel = m.second + L"\\plugin.so";   /* mods are shared objects on Linux */
+#else
         wchar_t full[MAX_PATH * 2]; const std::wstring rel = m.second + L"\\plugin.dll";
+#endif
         if (!GetFullPathNameW(rel.c_str(), MAX_PATH * 2, full, nullptr)) continue;   /* caminho absoluto: um relativo seria procurado a partir da pasta do .exe */
         const std::wstring dll = full;
         if (GetFileAttributesW(dll.c_str()) == INVALID_FILE_ATTRIBUTES) continue;

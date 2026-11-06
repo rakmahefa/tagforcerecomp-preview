@@ -8,6 +8,9 @@
  * bytes com sincronia 0x0FD0). O anel so aparece "vazio" quando tudo o que entrou ja foi consumido pelo jogo. PTS: o video
  * so traz PTS no 1o quadro de cada GOP, os outros sao calculados (29,97 fps = 3003); audio = 2048 amostras = 4180. */
 #include "hle.h"
+#ifdef __linux__
+#include "windows.h"   /* _wfopen/_fseeki64 come from the compat layer */
+#endif
 #include "ffmpeg_dec.h"
 #include <stdio.h>
 #include <string.h>

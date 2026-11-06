@@ -1,5 +1,8 @@
 #include "gameid.h"
 #include "util.h"
+#ifdef __linux__
+#include "windows.h"   /* _wfopen/_fseeki64 come from the compat layer */
+#endif
 #include <stdio.h>
 #include <string.h>
 #include <stdint.h>

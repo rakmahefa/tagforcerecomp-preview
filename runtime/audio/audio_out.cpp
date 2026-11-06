@@ -16,8 +16,10 @@
  * plays n times faster with the SAME pitch: not muted and not chipmunk-high. Switching in and out goes through a short fade. */
 #include <windows.h>
 #include <mmsystem.h>
+#ifndef __linux__
 #include <mmdeviceapi.h>
 #include <audioclient.h>
+#endif
 #include <stdint.h>
 #include <stdlib.h>
 #include <stdio.h>
@@ -30,6 +32,7 @@
 #include "util.h"
 
 uint64_t k_now_us(void);
+
 extern volatile uint64_t g_diag_frames;
 static const uint32_t RATE = 44100;              /* game timeline */
 static const uint32_t RING = 1u << 16;          /* game samples in the ring (~1.5 s) */
@@ -199,7 +202,8 @@ static void render(float *out, uint32_t n, uint32_t dev_rate) {
     while (g_cleared + 4 < g_rd) { const uint32_t k = (uint32_t)(g_cleared & (RING - 1)) * 2; g_ring[k] = g_ring[k + 1] = 0; g_cleared++; }
 }
 
-/* ---------------- WASAPI backend ---------------- */
+/* ---------------- WASAPI backend (Windows) ---------------- */
+#ifndef __linux__
 static HANDLE g_ready;   /* set when a backend is running (or failed) */
 static volatile bool g_quit; static HANDLE g_done;   /* audio_out_shutdown: the WASAPI thread stops the stream, releases it and signals g_done */
 static bool g_wasapi_ok;
@@ -328,6 +332,42 @@ void audio_out_init(void) {
     }
     if (!waveout_start()) { g_on = false; fprintf(stderr, "[audio] no audio output device\n"); }
 }
+#endif /* _WIN32 */
+
+#ifdef __linux__
+/* Linux: the device thread is an SDL2 audio callback (the same pull path as WASAPI: render() with
+ * a continuous resampler and the WSOLA fast-forward). SDL picks PulseAudio/PipeWire/ALSA/dummy. */
+#include <SDL.h>
+static SDL_AudioDeviceID g_dev;
+static int g_dev_rate;
+static void SDLCALL sdl_audio_cb(void *userdata, Uint8 *stream, int len) {
+    (void)userdata;
+    float *out = (float *)stream;
+    const uint32_t frames = (uint32_t)len / (2 * (int)sizeof(float));
+    render(out, frames, (uint32_t)g_dev_rate);
+}
+static bool g_sdl_started;
+void audio_out_shutdown(void) {
+    if (!g_sdl_started) return;
+    if (g_dev) SDL_CloseAudioDevice(g_dev);
+    g_dev = 0;
+    g_sdl_started = false;
+}
+void audio_out_init(void) {
+    if (g_on || getenv("NO_AUDIO") || getenv("NO_PACE")) return;
+    g_on = true;
+    if (SDL_InitSubSystem(SDL_INIT_AUDIO) != 0) { fprintf(stderr, "[audio] SDL audio: %s\n", SDL_GetError()); g_on = false; return; }
+    SDL_AudioSpec want{}, have{};
+    want.freq = 48000; want.format = AUDIO_F32SYS; want.channels = 2; want.samples = 1024; want.callback = sdl_audio_cb;
+    g_dev = SDL_OpenAudioDevice(nullptr, 0, &want, &have, 0 /* no conversion: the callback resamples itself */);
+    if (!g_dev) { fprintf(stderr, "[audio] no audio output device (%s)\n", SDL_GetError()); g_on = false; return; }
+    g_dev_rate = have.freq;
+    SDL_PauseAudioDevice(g_dev, 0);
+    g_sdl_started = true;
+    fprintf(stderr, "[audio] SDL audio: %d Hz stereo float32, buffer %d frames (%.1f ms); game audio 44100 Hz resampled (cubic)\n",
+            have.freq, (int)have.samples, have.samples * 1000.0 / have.freq);
+}
+#endif /* __linux__ */
 
 /* Writes the last seconds sent to the device as a WAV (stereo 16-bit, device rate); returns the length in s (0 = nothing). */
 double audio_out_dump(const wchar_t *path) {

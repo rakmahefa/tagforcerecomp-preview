@@ -109,11 +109,9 @@ def main():
             '- `payload.json` - the release this folder belongs to.\n'
             '\n'
             'It carries **no game data and no game code**: the launcher copies the files from your\n'
-            'own ISO (European release, ULES-00600) and translates the game on your machine.\n'
-            'In this preview the Windows runtime does not build on Linux yet, so Build prepares\n'
-            'the game files and the translated code, and Play starts the game as soon as a Linux\n'
-            'build of the runtime lands beside the launcher. The C++ compiler and the other tools\n'
-            'come from your distribution (the Tools page says which).\n')
+            'own ISO (European release, ULES-00600), translates the game and compiles it on your\n'
+            'machine - the Tools page says which packages your distribution needs. Nothing is\n'
+            'downloaded and nothing is uploaded.\n')
 
     # 5. documents, and the three-step start for Linux
     for name in ('LICENSE', 'THIRD_PARTY.md', 'README.md'):
@@ -125,8 +123,9 @@ def main():
             '1. Open a terminal in this folder and run:      ./tagforce-launcher\n'
             '2. Drag your disc image onto the window (Yu-Gi-Oh! GX Tag Force, European release\n'
             '   ULES-00600 - your own copy), then walk the pages with Continue.\n'
-            '3. Press Start building; see README-LINUX above and docs/LINUX.md for what this\n'
-            '   preview does and does not do on Linux yet.\n'
+            '3. Press Start building: the launcher copies the game files, translates the game\n'
+            '   code and compiles it (the Tools page lists the packages your distribution needs),\n'
+            '   then press Play. See README-LINUX above and docs/LINUX.md for what works.\n'
             '\n'
             'Nothing from the game is included here; everything is made on your computer from\n'
             'your own disc. If the launcher does not start, install SDL2 (sudo apt install\n'

@@ -272,8 +272,8 @@ int headlessBuild(const std::optional<Payload> &payload, const std::optional<fs:
         return 0;
     }
     if (pipeline.stoppedAtGap()) {
-        std::printf("[launcher] stopped at the Linux gap: the game files and translated code are ready in %s; "
-                    "the runtime does not build on Linux yet\n",
+        std::printf("[launcher] stopped before the runtime: this payload has no tools/build_linux.sh; the game files "
+                    "and translated code are ready in %s\n",
                     options.workspace.c_str());
         return 0;
     }

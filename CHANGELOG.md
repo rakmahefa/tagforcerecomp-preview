@@ -4,8 +4,38 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
 
 ## [Unreleased]
 
+### Linux runtime (branch `linux-runtime`)
+
+- the runtime builds and runs on Linux (`tools/build_linux.sh`): a Win32 compatibility layer
+  (`runtime/plat/`, POSIX + SDL2 + software GDI + stb_truetype fonts) so the game code stays
+  single-source, with `#ifdef __linux__` only in the genuinely platform-bound spots
+  (coroutines in SysV AMD64, the TinyCC JIT on `libtcc.so`, SDL2 audio, the Vulkan Xlib
+  surface, libpng/libjpeg codecs, the translator on the system Python, mods as `plugin.so`);
+- Direct3D 11 does not exist on Linux: the game falls back to Vulkan or the software renderer;
+- known gaps, all logged: the update check is unavailable, exclusive fullscreen is borderless,
+  and the DWM vblank clock is replaced by the nominal frame grid;
+- `tools/build_linux.sh` works out of the box on a plain system: the dependencies resolve
+  through `pkg-config` (a missing one is named, with the package line to install), `stb_image.h`
+  and `stb_truetype.h` are vendored in `runtime/plat/stb/`, TinyCC's `libtcc.so` (not packaged
+  by any distribution) is compiled once from the official 0.9.27 source by
+  `tools/build_tcc_linux.sh`, each source prints a `[n/N]` progress line, and, like the Windows
+  build, the repository root becomes a ready-to-run install (`TagForceRecomp`, `tcc/`,
+  `include/psp_rt.h`);
+- the JIT compiles the translated modules on Linux: the paths that reach TinyCC use real
+  separators, `psp_rt.h` includes the system's libc headers (the Windows bundle carries its
+  own), and `__declspec(dllimport)` is Windows-only. Known gap: the `gen/jitcache/` object
+  cache does not round-trip yet, so modules compile in memory at every start (the fallback
+  the cache was designed with);
+- the file installer (`--install`) and the command line work with real paths (argv values are
+  no longer rewritten as Windows paths, and directory creation uses forward separators);
+- the launcher builds the game: the Build page runs `tools/build_linux.sh` (the `[n/N]` lines
+  are its progress bar) and Play starts the game from `<workspace>/source` - the Tools page
+  now checks what the build actually needs (SDL2, the FFmpeg libraries, PNG/JPEG, Vulkan,
+  glslc; CMake and Ninja are no longer required), and the CI artifact carries only the
+  release tarball.
+
 ### Added
-- **Linux launcher** (`tools/launcher/`): an SDL2 + Dear ImGui window in the style of the DQ8Recomp launcher, with the pages **Your disc, Tools, Options, Build, Play**. It recognises the European disc (ULES-00600) from the ISO itself, checks g++/CMake/Ninja/Python/FFmpeg, copies the game files and translates the game's code through the same Python tools as the Windows release, and stops honestly at compiling the runtime, which is still Windows-only. `tools/launcher/package_linux.py` builds the Linux release - an executable plus a `payload/` folder with the source - as a tar.gz, with SDL2 bundled; `.github/workflows/linux-launcher.yml` builds, tests (synthetic disc, smoke test, screenshots of every page) and publishes it as a prerelease on pushes to master. See `docs/LINUX.md`.
+- **Linux launcher** (`tools/launcher/`): an SDL2 + Dear ImGui window in the style of the DQ8Recomp launcher, with the pages **Your disc, Tools, Options, Build, Play**. It recognises the European disc (ULES-00600) from the ISO itself, checks the tools and libraries the build needs, copies the game files, translates the game's code through the same Python tools as the Windows release and compiles the runtime; Play starts the game. `tools/launcher/package_linux.py` builds the Linux release - an executable plus a `payload/` folder with the source - as a tar.gz, with SDL2 bundled; `.github/workflows/linux-launcher.yml` builds, tests (synthetic disc, smoke test, screenshots of every page) and publishes it as a prerelease on pushes to master. See `docs/LINUX.md`.
 
 ## [0.6.0] - 2026-11-02
 

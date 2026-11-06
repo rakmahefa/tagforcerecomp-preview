@@ -105,7 +105,7 @@ replayed with `tools/test/replay.sh` (developers). `tools/test/tf.py` plays the 
 
 ## Linux (launcher preview)
 
-There is now a **Linux release** in the making, built around the same idea as the DQ8Recomp launcher: one download with an executable (`tagforce-launcher`) and a `payload/` folder, five pages - **Your disc, Tools, Options, Build, Play** - and nothing from the game inside. In this preview the launcher recognises the disc, checks the tools and prepares the game files and the translated code; the runtime itself still builds only on Windows. See [`docs/LINUX.md`](docs/LINUX.md) for what works, the screenshots of every page, and the developer build.
+There is now a **Linux release** in the making, built around the same idea as the DQ8Recomp launcher: one download with an executable (`tagforce-launcher`) and a `payload/` folder, five pages - **Your disc, Tools, Options, Build, Play** - and nothing from the game inside. The runtime itself now also builds and runs on Linux (branch `linux-runtime`): a Win32 compatibility layer in `runtime/plat/` (POSIX + SDL2 + software GDI) keeps the game code single-source, the TinyCC JIT uses `libtcc.so`, audio goes through SDL2, and the software renderer and Vulkan (Xlib surface) present the frames; Direct3D 11 falls back. See [`docs/LINUX.md`](docs/LINUX.md) for what works, the screenshots of every page, and the developer builds of both the launcher and the runtime.
 
 ## Build from source (developers)
 
