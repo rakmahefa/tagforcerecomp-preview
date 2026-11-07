@@ -46,10 +46,95 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
   a guest address, a NULL prints as a native null pointer (the old `end PSP 0xffff8073...` for
   `fa - g_mem` was meaningless), the RIP is resolved to a named function of the executable
   (`-rdynamic`) or to the JIT range of a module (the linked code is mmapped by the runtime now),
-  a correct `addr2line` hint with the real load base is printed, and the native call chain above
-  the fault is listed. `GetModuleHandle(nullptr)` returns the executable's load address (it used
+  a correct `addr2line` hint with the real load base is printed, the native call chain above
+  the fault is listed, and **the syscall in flight is named with the arguments the game passed**
+  (`syscall em execucao: <lib>::<funcao>(a0..a3) ra=...`) - `psp_call` notes it before running
+  the (static, unnameable by `dladdr`) HLE body, so a crash inside one no longer needs
+  `addr2line` or a re-run with `HLE_TRACE=1` (the first full-data boot crashed exactly there:
+  a native NULL with `RIP <sem simbolo>+0xda671` right under `psp_call`).
+  `GetModuleHandle(nullptr)` returns the executable's load address (it used
   to return a `dlopen` handle, so `exe+offset` was garbage); `TF_CRASH_TEST=1` triggers a
   controlled crash to check all of this;
+- blocking syscalls (sema/event-flag/vblank waits, delays, thread waits, FPL allocation) called
+  without a current thread - a game routine run in interrupt context (the vblank of the
+  scheduler's idle point) or a native module init - return the PSP's context error
+  (`0x8002019a`) and log which call it was, instead of dereferencing the null current-thread
+  pointer (that was a `(nil)` crash with the RIP inside the syscall's body); the checks that
+  can be satisfied without blocking (a sema already signalled, event-flag bits already set)
+  still succeed;
+- **the Linux coroutine trampoline aligns the stack to 16 bytes before calling the thread
+  function** (`andq $-16`): the whole emulated thread - `thread_entry` -> `psp_call` ->
+  recompiled code - runs on a stack born in that trampoline, and the SysV ABI requires
+  `rsp % 16 == 0` at every call. The Windows switch was born aligned (its `coro_create`
+  places the frame at `top - 0x40` and the trampoline's `sub 0x20` keeps it); the Linux port
+  wrote a new minimal trampoline and forgot the invariant, so every frame on a coroutine stack
+  sat 8 bytes off. Nothing noticed until `psp_call` began packing the four `g_hle_now_a`
+  values into one 16-byte slot: the compiler's `movaps` then took a #GP, Linux delivers that
+  as `SIGSEGV` with `si_addr == 0`, and the crash report printed a *native null pointer that
+  never existed* - the player's second boot died exactly there (`psp_call+0x1be`, right after
+  BOOT loaded, first import call of the entry). Reproduced standalone with a one-function
+  module whose entry calls a bound import stub: same `(nil)`, same RIP class, same registers;
+  with the alignment it runs to `todas as threads terminaram (rc=0)`;
+- a #GP no longer masquerades as a null dereference: the signal shim tags `SIGSEGV` with
+  `si_code == SI_KERNEL` and `si_addr == 0` (a misaligned `movaps`/`movdqa`, or a non-canonical
+  address) as Windows' datatype-misalignment (`0x80000002`), and the report says so - "acesso
+  ALINHADO (SSE) a endereco desalinhado: pilha do host fora dos 16 bytes da ABI" - instead of
+  the old "(nil)", which sent the first diagnosis hunting a null pointer that was not there;
+- **a Linux config that asks for Direct3D 11 (the default inherited from Windows) now runs
+  Vulkan, not the software renderer**: `start_gpu` mapped the D3D 11 request straight to
+  software (the Windows chain is Vulkan -> D3D 11 -> software; entering it at D3D 11 on Linux,
+  where `gpu_select` refuses it, never tried the GPU at all - the player's first boot logged
+  "[gpu] nenhum indisponivel", rasterized the GE on the CPU at the monitor-matched resolution
+  (14 ms per frame, ~35 fps) and showed a black window). Now the D3D 11 request is translated
+  to Vulkan before the chain, `gfx_load` does the same for the saved `renderizador` key (so the
+  .ini and the Graphics menu say what really runs), and the menu on Linux offers only
+  Software / Vulkan;
+- **the Vulkan surface is a Wayland surface when SDL gave the window to the compositor
+  natively** (a Wayland session without XWayland, or `SDL_VIDEODRIVER=wayland`): the port only
+  built an Xlib surface from the SDL window's X11 handle, so on the player's Wayland desktop
+  `tf_shim_x11_window` found no handle, the backend printed "falling back to the software
+  renderer", and the game ran GE on the CPU with a black window (the same signature as the
+  config bug above: ~14-21 ms of GE per frame, zero GPU textures, 27-34 ms frames). The window
+  is now asked for both handles: X11 first (XWayland, unchanged), then the `wl_display` /
+  `wl_surface` pair for a `VkWaylandSurfaceKHR` (opaque pointers straight from
+  `SDL_GetWindowWMInfo` - no wayland-client headers at build time, no new link dependency).
+  The instance, in turn, no longer asks for a fixed extension list: the WSI extensions the
+  loader actually enumerates are the ones enabled (a stack without the requested names used to
+  fail `vkCreateInstance` itself with -9 - a machine with no ICD at all did exactly that);
+- **the software renderer's window no longer stays black on Linux**: a GDI draw lands on the
+  window's backing canvas, but only a *present* pushes that canvas to the SDL window, and the
+  game's per-frame blit paints through `GetDC` / `ReleaseDC` - a path that never presented
+  (the window DCs did not even mark the canvas as touched, so `EndPaint` skipped too). The
+  last-resort renderer drew every frame and showed nothing; reproduced standalone under Xvfb
+  with exactly the shim calls of `display_present` (417 frames blitted, a screenshot 0 %
+  non-black). Now a `ReleaseDC` whose draw touched the canvas presents it, like `EndPaint`
+  does for `WM_PAINT`, and the per-window SDL renderer presents without `SDL_RENDERER_PRESENTVSYNC`
+  (on Windows a `GetDC` draw is on the screen at once and the game's own limiter does the
+  pacing; a vsynced present would block the game thread on the compositor, up to a whole
+  refresh per frame - or forever on an occluded Wayland window). With the fix the same
+  standalone test shows the frame: 100 % non-black;
+- **a window the Vulkan backend owns gets no SDL presents** (native Wayland): the first native
+  Wayland boot died seconds after the game window came up, the compositor closing the connection -
+  `wp_linux_drm_syncobj_surface_v1#62: error 4: explicit sync is used, but no acquire point is
+  set`, then `ERROR: Wayland display connection closed by server (fatal)`. The Wayland surface fix
+  put the swapchain on the SDL window's `wl_surface`, and Mesa's WSI wraps that surface with
+  `linux-drm-syncobj-v1` as soon as the compositor offers explicit sync (KWin does); from then on
+  the surface takes exactly one buffer producer, and every buffer commit must carry an acquire
+  point. But the shim's GDI present path (the fix above: an SDL renderer behind
+  `EndPaint`/`ReleaseDC`/`UpdateWindow`) was still committing the window canvas to the same
+  surface - a `WM_PAINT` during the game's boot paints the shadow frame - and SDL2 knows nothing
+  of explicit sync, so its commit is a protocol violation the compositor answers by killing the
+  connection. The Vulkan backend now claims the window (`tf_shim_wnd_set_vulkan`) when it creates
+  the Wayland surface and releases it in `destroy_all` (the window can go back to GDI); while a
+  window is claimed, `wnd_present` stands down (logged, rate-limited, and the SDL renderer it may
+  have created is dropped - its EGL window would be a second producer), because the game frame and
+  the overlay already go out through the swapchain, and on Wayland there are no exposures to
+  repaint for. The software renderer, the launcher and the message boxes are untouched (their
+  windows are never claimed), and X11 windows keep today's behavior. Verified standalone under
+  Xvfb with the shim's exact present calls in three phases: the gradient blit reaches the screen
+  (97.6 % of the capture); with the window claimed, 89 yellow frames blitted and 0.0 % of them
+  reached the screen (the capture still shows the gradient, and the shim logged the suppression);
+  released, the yellow presents come back (100.0 %). The headless game boot still ends `rc=0`;
 - the watchdog only counts missing frames once the scheduler starts (a 14 s JIT compile on a
   laptop is not a hang), and the `[iso] arquivos do jogo` line is logged once (the installed
   folder was opened twice: the background reader thread started twice too);
@@ -57,9 +142,20 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
   no longer rewritten as Windows paths, and directory creation uses forward separators);
 - the launcher builds the game: the Build page runs `tools/build_linux.sh` (the `[n/N]` lines
   are its progress bar) and Play starts the game from `<workspace>/source` - the Tools page
-  now checks what the build actually needs (SDL2, the FFmpeg libraries, PNG/JPEG, Vulkan,
-  glslc; CMake and Ninja are no longer required), and the CI artifact carries only the
-  release tarball.
+  now checks what the build actually needs (SDL2, the FFmpeg libraries, PNG/JPEG, Vulkan;
+  CMake and Ninja are no longer required), and the CI artifact carries only the
+  release tarball;
+- **the payload carries what the player's machine must not need to build** (`prebuilt/`): the
+  Vulkan shaders, already compiled to SPIR-V (`gpu_spv.h`, regenerated by
+  `tools/build/spv2h.py`; `glslc` is only needed to recompile them after an edit), and
+  TinyCC 0.9.27 (`tcc/`, `libtcc.so` with `libtcc1.a` and its headers), built at package time
+  by `tools/build_tcc_linux.sh` from the official source - on the CI's oldest supported
+  runner, so the `.so` loads on any newer glibc. `tools/build_linux.sh` prefers that copy
+  over compiling TinyCC locally (a first Build on a machine whose TinyCC is another version,
+  or where the source download stalls, simply no longer compiles or downloads anything);
+  `tools/launcher/package_linux.py` builds and verifies it into the tarball, refuses to
+  package a `libtcc.so` that is not the tested 0.9.27, warns if one needs a glibc newer
+  than 2.35, and the Tools page now reports both as bundled.
 
 ### Added
 - **Linux launcher** (`tools/launcher/`): an SDL2 + Dear ImGui window in the style of the DQ8Recomp launcher, with the pages **Your disc, Tools, Options, Build, Play**. It recognises the European disc (ULES-00600) from the ISO itself, checks the tools and libraries the build needs, copies the game files, translates the game's code through the same Python tools as the Windows release and compiles the runtime; Play starts the game. `tools/launcher/package_linux.py` builds the Linux release - an executable plus a `payload/` folder with the source - as a tar.gz, with SDL2 bundled; `.github/workflows/linux-launcher.yml` builds, tests (synthetic disc, smoke test, screenshots of every page) and publishes it as a prerelease on pushes to master. See `docs/LINUX.md`.

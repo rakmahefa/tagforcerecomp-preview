@@ -1057,6 +1057,14 @@ static void tf_shim_signal(int sig, siginfo_t *si, void *uctx) {
     if (!((uc->uc_mcontext.gregs[REG_ERR]) & 2)) rec.ExceptionInformation[0] = 0;
 #endif
     rec.ExceptionInformation[1] = (ULONG_PTR)si->si_addr;
+#ifdef SI_KERNEL
+    /* A #GP (misaligned SSE - movaps/movdqa -, non-canonical address) arrives as SIGSEGV with
+     * si_code == SI_KERNEL and si_addr == 0: NOT a null dereference (that one is SEGV_MAPERR).
+     * Report it as Windows' datatype-misalignment so the crash report says what it really was:
+     * the first boot crashed exactly like this and the report blamed an imaginary null. */
+    if (sig == SIGSEGV && si->si_code == SI_KERNEL && si->si_addr == nullptr)
+        rec.ExceptionCode = (UINT)EXCEPTION_DATATYPE_MISALIGNMENT;
+#endif
     ctx.Rip = (DWORD64)uc->uc_mcontext.gregs[REG_RIP];
     EXCEPTION_POINTERS ep{&rec, &ctx};
     for (auto h : g_vectored) {   /*vram_fault: fixes the page and resumes*/

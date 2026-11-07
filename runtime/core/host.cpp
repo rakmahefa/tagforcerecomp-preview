@@ -14,6 +14,15 @@
 #endif
 
 uint8_t *g_mem;
+/* A syscall em voo quando um crash acontece: psp_call preenche antes de rodar o corpo da HLE. O relatorio
+ * de crash a nomeia - dladdr nao consegue (os corpos sao funcoes estaticas, o RIP sai "<sem simbolo>" e o
+ * addr2line ficaria por conta do player rodar) - e mostra os argumentos que o jogo passou. Chamadas aninhadas
+ * (uma rotina do jogo chamada por uma interrupcao dentro de outra chamada) guardam a mais interna: a que
+ * executava quando caiu. */
+extern "C" {
+    const ImportEntry *g_hle_now = nullptr;
+    uint32_t g_hle_now_a[4] = {0, 0, 0, 0}, g_hle_now_ra = 0;
+}
 extern "C" { uint32_t g_trace[1024]; uint32_t g_trace_i; uint32_t g_watch, g_watch_val; }
 static bool g_wlog_on; static FILE *g_wlog_f;
 extern "C" void tf_wlog(uint32_t a, uint32_t v, int sz) { if (g_wlog_on && g_wlog_f) { uint32_t r[3] = {a, v, (uint32_t)sz}; fwrite(r, 4, 3, g_wlog_f); } }
@@ -47,7 +56,13 @@ static LONG WINAPI crash_handler(EXCEPTION_POINTERS *ep) {
 #ifdef __linux__
     /* An access inside the 1 GiB PSP window is a guest address; anything else is a HOST pointer.
      * The old print of (fa - g_mem) turned NULL into 0xffff8073d4000000, which told nothing. */
-    if (g_mem && fa >= g_mem && fa < g_mem + 0x40000000u)
+    if (ep->ExceptionRecord->ExceptionCode == EXCEPTION_DATATYPE_MISALIGNMENT)
+        /* a #GP: an aligned SSE access (movaps/movdqa) to an unaligned address - on this code that
+         * is a host stack out of the ABI's 16-byte alignment (coroutine trampoline / JIT call), not
+         * a game pointer and not a null: Linux delivers it as SIGSEGV with si_addr == 0, which used
+         * to print as "(nil)" and sent the first boot crash hunting a null that did not exist */
+        fprintf(stderr, "\n[CRASH] excecao 0x%08lx, acesso ALINHADO (SSE) a endereco desalinhado: pilha do host fora dos 16 bytes da ABI (corotina ou chamada do JIT)\n", ep->ExceptionRecord->ExceptionCode);
+    else if (g_mem && fa >= g_mem && fa < g_mem + 0x40000000u)
         fprintf(stderr, "\n[CRASH] excecao 0x%08lx, acesso em %p = endereco PSP 0x%08x\n", ep->ExceptionRecord->ExceptionCode, (void *)fa, (uint32_t)(fa - g_mem));
     else if (!fa)
         fprintf(stderr, "\n[CRASH] excecao 0x%08lx, acesso em (nil): ponteiro NATIVO nulo (codigo do runtime/HLE, nao um endereco do jogo)\n", ep->ExceptionRecord->ExceptionCode);
@@ -74,6 +89,12 @@ static LONG WINAPI crash_handler(EXCEPTION_POINTERS *ep) {
             else
                 fprintf(stderr, "RIP nativo 0x%llx fora do executavel e do codigo JIT (heap/pilha do host; com libtcc 0.9.28rc o JIT liga no heap e nao e rastreavel)\n", (unsigned long long)rip);
         }
+        /* qual syscall o jogo tinha chamado: psp_call anota (o corpo e estatico, o dladdr nao nomeia); com isso o
+         * relatorio basta - nao precisa de addr2line nem de rodar com HLE_TRACE */
+        if (g_hle_now)
+            fprintf(stderr, "syscall em execucao: %s::%s(a0=%08x, a1=%08x, a2=%08x, a3=%08x) ra=%08x\n",
+                    g_hle_now->lib ? g_hle_now->lib : "?", g_hle_now->name ? g_hle_now->name : "?",
+                    g_hle_now_a[0], g_hle_now_a[1], g_hle_now_a[2], g_hle_now_a[3], g_hle_now_ra);
         /* the native call chain above the fault: HLE/decomp/shim frames (JIT frames carry no unwind data and stop it) */
         void *bt[20];
         const int n = backtrace(bt, 20);
@@ -94,6 +115,10 @@ static LONG WINAPI crash_handler(EXCEPTION_POINTERS *ep) {
             (void *)fa, (unsigned long long)(fa - g_mem));
     fprintf(stderr, "RIP nativo = exe+0x%llx (addr2line -f -e TagForceRecomp.exe 0x%llx)\n",
             (unsigned long long)(rip - (DWORD64)GetModuleHandleA(nullptr)), (unsigned long long)rip);
+    if (g_hle_now)
+        fprintf(stderr, "syscall em execucao: %s::%s(a0=%08x, a1=%08x, a2=%08x, a3=%08x) ra=%08x\n",
+                g_hle_now->lib ? g_hle_now->lib : "?", g_hle_now->name ? g_hle_now->name : "?",
+                g_hle_now_a[0], g_hle_now_a[1], g_hle_now_a[2], g_hle_now_a[3], g_hle_now_ra);
 #endif
     fprintf(stderr, "ultimas funcoes recompiladas:");
     for (uint32_t i = 0; i < 24; i++) fprintf(stderr, " %08x", g_trace[(g_trace_i - 24 + i) & 1023]);
@@ -129,9 +154,11 @@ CPU *host_create(void) {
     }
     c->mem = g_mem; g_main_cpu = c; cpu_reset_vfpu(c);
     SetUnhandledExceptionFilter(crash_handler);
-    if (getenv("TF_CRASH_TEST")) {   /* diagnostics: verifies the crash report end to end (symbol names, PSP window, JIT ranges) */
+    if (getenv("TF_CRASH_TEST")) {   /* diagnostics: verifies the crash report end to end (symbol names, PSP window, JIT ranges, syscall in flight) */
         fprintf(stderr, "[diag] TF_CRASH_TEST: desreferenciando NULL agora\n");
         fflush(stderr);
+        static ImportEntry tf_diag{0, 0, "DiagForUser", "TF_CRASH_TEST"};   /* the report must also print the syscall-in-flight line */
+        g_hle_now = &tf_diag; g_hle_now_a[0] = 0x088ef04c; g_hle_now_a[1] = 2; g_hle_now_a[2] = 0; g_hle_now_a[3] = 0x5f000; g_hle_now_ra = 0x08867d0c;
         volatile int *nullp = nullptr; *nullp = 1;
     }
     if (const char *w = getenv("WATCH_ADDR")) g_watch = (uint32_t)strtoul(w, nullptr, 16);
@@ -199,7 +226,11 @@ void psp_call(CPU *c, uint32_t addr) {
          * trocam de thread emulada e voltam quadros depois: so conta se nenhum quadro foi apresentado durante a chamada. */
         extern volatile uint64_t g_diag_frames;
         uint64_t f0 = g_diag_frames; LARGE_INTEGER t0, t1; QueryPerformanceCounter(&t0);
+        const ImportEntry *prev_hle = g_hle_now; const uint32_t prev_a0 = g_hle_now_a[0], prev_a1 = g_hle_now_a[1], prev_a2 = g_hle_now_a[2], prev_a3 = g_hle_now_a[3], prev_ra = g_hle_now_ra;
+        g_hle_now = &g_imports[addr];
+        g_hle_now_a[0] = c->r[4]; g_hle_now_a[1] = c->r[5]; g_hle_now_a[2] = c->r[6]; g_hle_now_a[3] = c->r[7]; g_hle_now_ra = c->r[31];
         b->second(c);
+        g_hle_now = prev_hle; g_hle_now_a[0] = prev_a0; g_hle_now_a[1] = prev_a1; g_hle_now_a[2] = prev_a2; g_hle_now_a[3] = prev_a3; g_hle_now_ra = prev_ra;
         QueryPerformanceCounter(&t1);
         if (g_diag_frames == f0) {
             static LARGE_INTEGER qf; if (!qf.QuadPart) QueryPerformanceFrequency(&qf);

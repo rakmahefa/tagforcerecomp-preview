@@ -97,10 +97,26 @@ static Thread *find_thread(uint32_t uid) { auto it = g_threads.find(uid); return
 static void make_ready(Thread *t, uint32_t result) {
     t->st = READY; t->wk = W_NONE; t->has_to = false; t->result = result; t->seq = ++g_seq;
 }
-static void to_sched() { tf_coro_switch(&g_cur->co.sp, g_sched_sp); }
+static void to_sched() {
+    if (!g_cur) { fprintf(stderr, "[kernel] to_sched sem thread corrente (bug do runtime)\n"); host_fatal(9); }   /* antes: tf_coro_switch dereferenciava o NULL */
+    tf_coro_switch(&g_cur->co.sp, g_sched_sp);
+}
+
+/* Bloquear (esperar semaforo/event flag/vblank, atraso) exige a thread corrente: uma rotina do jogo chamada em
+ * contexto de interrupcao (o vblank do ponto ocioso do escalonador, quando TODAS as threads esperam) ou um init
+ * nativo nao tem Thread - g_cur == nullptr - e as HLE de espera desreferenciavam esse NULL: crash "(nil)" com o
+ * RIP dentro do corpo (estatico, "<sem simbolo>") da syscall. No PSP de verdade bloquear ali tambem e proibido:
+ * devolvemos o erro de contexto (as chamadas que ja tem o resultado continuam funcionando) e o log diz qual foi. */
+#define KERR_ILLEGAL_CONTEXT 0x8002019au
+static bool thread_to_block(const char *who) {
+    if (g_cur) return true;
+    static int n; if (n++ < 40) fprintf(stderr, "[kernel] %s chamado sem thread corrente (rotina de interrupcao ou init nativo): devolve erro de contexto em vez de bloquear\n", who);
+    return false;
+}
 
 void k_block_current(uint64_t timeout_us, bool has_timeout) {
     Thread *t = g_cur;
+    if (!t) { fprintf(stderr, "[kernel] k_block_current sem thread corrente (bug do runtime)\n"); host_fatal(9); }
     t->st = WAITING; t->has_to = has_timeout; t->wake_at = g_now + timeout_us;
     to_sched();
 }
@@ -262,7 +278,8 @@ HLE(sceKernelDeleteThread) {   /* o objeto Thread fica (pode haver ponteiros nas
     g_threads.erase(t->uid); g_all.erase(std::find(g_all.begin(), g_all.end(), t)); RET(0);
 }
 HLE(sceKernelExitThread) {
-    Thread *t = g_cur; t->exit_status = ARG(0); t->st = DORMANT;
+    Thread *t = g_cur; if (!t) { RET(0); return; }   /* sem thread (interrupcao/init nativo): nao ha o que encerrar */
+    t->exit_status = ARG(0); t->st = DORMANT;
     for (auto *o : g_all) if (o->st == WAITING && o->wk == W_THREADEND && o->wobj == t->uid) make_ready(o, t->exit_status);
     to_sched();
 }
@@ -274,9 +291,10 @@ HLE(sceKernelResumeThread) {
     Thread *t = find_thread(ARG(0)); if (!t) { RET(KERR_UNKNOWN_UID); return; }
     t->suspended = false; RET(0); preempt_check();
 }
-HLE(sceKernelDelayThread) { g_cur->wk = W_DELAY; g_now += 1; k_block_current(ARG(0), true); RET(0); }
-HLE(sceKernelDelayThreadCB) { g_cur->wk = W_DELAY; k_block_current(ARG(0), true); RET(0); }
+HLE(sceKernelDelayThread) { if (!thread_to_block("sceKernelDelayThread")) { RET(KERR_ILLEGAL_CONTEXT); return; } g_cur->wk = W_DELAY; g_now += 1; k_block_current(ARG(0), true); RET(0); }
+HLE(sceKernelDelayThreadCB) { if (!thread_to_block("sceKernelDelayThreadCB")) { RET(KERR_ILLEGAL_CONTEXT); return; } g_cur->wk = W_DELAY; k_block_current(ARG(0), true); RET(0); }
 HLE(sceKernelSleepThread) {
+    if (!thread_to_block("sceKernelSleepThread")) { RET(KERR_ILLEGAL_CONTEXT); return; }
     if (g_cur->wake_pending) { g_cur->wake_pending = false; RET(0); return; }
     g_cur->wk = W_SLEEP; k_block_current(0, false); RET(0);
 }
@@ -288,6 +306,7 @@ HLE(sceKernelWakeupThread) {
 static void wait_thread_end(CPU *c) {
     Thread *t = find_thread(ARG(0)); if (!t) { RET(KERR_UNKNOWN_UID); return; }
     if (t->st == DORMANT) { RET(t->exit_status); return; }
+    if (!thread_to_block("sceKernelWaitThreadEnd")) { RET(KERR_ILLEGAL_CONTEXT); return; }
     g_cur->wk = W_THREADEND; g_cur->wobj = t->uid; k_block_current(0, false); RET(g_cur->result);
 }
 HLE(sceKernelWaitThreadEnd) { wait_thread_end(c); }
@@ -339,6 +358,7 @@ static void wait_sema(CPU *c) {
     auto it = g_sema.find(ARG(0)); if (it == g_sema.end()) { RET(KERR_UNKNOWN_UID); return; }
     Sema &s = it->second; uint32_t need = ARG(1);
     if (s.count >= (int)need && s.q.empty()) { s.count -= need; RET(0); return; }
+    if (!thread_to_block("sceKernelWaitSema")) { RET(KERR_ILLEGAL_CONTEXT); return; }   /* pegar o que ja havia: pode */
     bool has; uint32_t to = timeout_of(ARG(2), has);
     g_cur->wk = W_SEMA; g_cur->wobj = ARG(0); g_cur->need = need; enqueue_waiter(s.q, g_cur);
     k_block_current(to, has); RET(g_cur->result);
@@ -364,6 +384,13 @@ HLE(sceKernelClearEventFlag) { auto it = g_evf.find(ARG(0)); if (it == g_evf.end
 HLE(sceKernelWaitEventFlag) {   /* (id, bits, mode, outBits*, timeout*) */
     auto it = g_evf.find(ARG(0)); if (it == g_evf.end()) { RET(KERR_UNKNOWN_UID); return; }
     Evf &e = it->second;
+    if (!g_cur) {   /* sem thread (interrupcao/init nativo): a conferencia sem bloquear ainda vale */
+        static int n; if (n++ < 40) fprintf(stderr, "[kernel] sceKernelWaitEventFlag chamado sem thread corrente (rotina de interrupcao ou init nativo): confere os bits sem bloquear\n");
+        const uint32_t need = ARG(1), mode = ARG(2);
+        const bool ok = (mode & 1) ? (e.pat & need) != 0 : (e.pat & need) == need;
+        if (ok) { if (ARG(3)) wr32(ARG(3), e.pat); if (mode & 0x10) e.pat = 0; if (mode & 0x20) e.pat &= ~need; RET(0); return; }
+        RET(KERR_ILLEGAL_CONTEXT); return;
+    }
     g_cur->need = ARG(1); g_cur->mode = ARG(2); g_cur->out_ptr = ARG(3);
     if (evf_match(e, g_cur)) { RET(0); return; }
     bool has; uint32_t to = timeout_of(ARG(4), has);
@@ -387,7 +414,7 @@ HLE(sceKernelCpuResumeIntr) { RET(0); }
 HLE(sceKernelPowerTick) { RET(0); }
 
 /* ------------------------------------------------------------------ display (so o necessario ao agendador) */
-HLE(sceDisplayWaitVblankStartCB) { g_cur->wk = W_VBLANK; k_block_current(0, false); RET(0); }
+HLE(sceDisplayWaitVblankStartCB) { if (!thread_to_block("sceDisplayWaitVblankStartCB")) { RET(KERR_ILLEGAL_CONTEXT); return; } g_cur->wk = W_VBLANK; k_block_current(0, false); RET(0); }
 HLE(sceDisplayGetVcount) { time_poll(1, true); RET((uint32_t)(g_now / VBLANK_US)); }
 HLE(sceDisplayGetAccumulatedHcount) { time_poll(1, true); RET((uint32_t)(g_now / 60)); }
 
@@ -427,6 +454,7 @@ HLE(sceKernelAllocateFpl) {   /* (uid, void **data, timeout*) */
     for (;;) {
         Fpl &f = it->second;
         for (uint32_t i = 0; i < f.n; i++) if (!f.used[i]) { f.used[i] = true; wr32(ARG(1), f.base + i * f.bsize); RET(0); return; }
+        if (!thread_to_block("sceKernelAllocateFpl")) { RET(KERR_ILLEGAL_CONTEXT); return; }
         bool has; uint32_t to = timeout_of(ARG(2), has);
         g_cur->wk = W_MBX; g_cur->wobj = ARG(0); enqueue_waiter(f.q, g_cur); k_block_current(to, has);
         if (g_cur->result) { RET(g_cur->result); return; }
@@ -496,7 +524,7 @@ uint32_t k_call_guest(uint32_t addr, uint32_t a0, uint32_t a1, uint32_t a2, uint
 void k_unregister_module(uint32_t uid) {
     for (size_t i = 0; i < g_mods.size(); i++) if (g_mods[i].uid == uid) { g_mods.erase(g_mods.begin() + i); return; }
 }
-void k_delay_current(uint64_t us) { g_cur->wk = W_DELAY; k_block_current(us, true); }
+void k_delay_current(uint64_t us) { if (!g_cur) return; g_cur->wk = W_DELAY; k_block_current(us, true); }
 
 extern "C" { extern uint32_t g_trace[1024]; extern uint32_t g_trace_i; }
 void k_dump_threads(void) {

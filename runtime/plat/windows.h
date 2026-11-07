@@ -593,6 +593,7 @@ typedef struct _XINPUT_CAPABILITIES { BYTE Type, SubType, Flags; XINPUT_GAMEPAD 
 #define EXCEPTION_CONTINUE_EXECUTION (-1)
 #define EXCEPTION_EXECUTE_HANDLER 1
 #define EXCEPTION_ACCESS_VIOLATION 0xC0000005
+#define EXCEPTION_DATATYPE_MISALIGNMENT 0x80000002
 #define EXCEPTION_INT_DIVIDE_BY_ZERO 0xC0000094
 typedef struct _EXCEPTION_RECORD { UINT ExceptionCode; UINT ExceptionFlags; struct _EXCEPTION_RECORD *ExceptionRecord; LPVOID ExceptionAddress; UINT NumberParameters; ULONG_PTR ExceptionInformation[2]; } EXCEPTION_RECORD;
 typedef struct _CONTEXT { DWORD64 Rip; DWORD ContextFlags; } CONTEXT;   /* the fields the runtime reads (sampling profiler) */
@@ -1083,6 +1084,14 @@ ULONG RemoveVectoredExceptionHandler(PVECTORED_EXCEPTION_HANDLER);
 #ifdef __linux__
 /*the X11 handles behind a shim HWND (gpu_vulkan creates its Xlib surface from them)*/
 int tf_shim_x11_window(HWND h, void **display, unsigned long *xid);
+/*the Wayland handles behind a shim HWND (gpu_vulkan creates its Wayland surface from them when
+ * SDL gave the window to the compositor natively: no XWayland, or SDL_VIDEODRIVER=wayland)*/
+int tf_shim_wl_window(HWND h, void **display, void **surface);
+/*tells the shim whether the Vulkan backend owns this window's native surface (on = it created a
+ * Wayland Vulkan surface on it): while it does, the shim's GDI present path must not commit
+ * buffers to the same wl_surface - one producer per surface, and a commit without an acquire
+ * point under linux-drm-syncobj-v1 (the explicit-sync protocol Mesa's WSI uses) is fatal*/
+void tf_shim_wnd_set_vulkan(HWND h, int on);
 #endif
 DWORD XInputGetState(DWORD idx, XINPUT_STATE *state);
 DWORD XInputGetCapabilities(DWORD idx, DWORD flags, XINPUT_CAPABILITIES *caps);

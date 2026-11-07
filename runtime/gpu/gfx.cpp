@@ -63,6 +63,11 @@ void gfx_load(void) {
     g_gfx.renderer = (int)GetPrivateProfileIntW(L"graficos", L"renderizador", g_gfx.renderer, ini.c_str());
     if (getenv("TF_GPU")) g_gfx.renderer = atoi(getenv("TF_GPU"));   /* testes: TF_GPU=0 software, 1 Direct3D 11, 2 Vulkan */
     if (g_gfx.renderer < 0 || g_gfx.renderer > 2) g_gfx.renderer = GFX_RENDER_SOFTWARE;
+#ifdef __linux__
+    /* Direct3D 11 e do Windows: o equivalente aqui e o Vulkan (start_gpu faria o mesmo ao iniciar,
+     * mas assim o valor salvo no .ini e o menu ja dizem o que roda de verdade). */
+    if (g_gfx.renderer == GFX_RENDER_D3D11) { g_gfx.renderer = GFX_RENDER_VULKAN; if (getenv("GFX_DEBUG")) fprintf(stderr, "[gfx] renderizador Direct3D 11 pedido: no Linux vale Vulkan\n"); }
+#endif
     if (g_gfx.res < 1 || g_gfx.res > 8) g_gfx.res = 1;
     g_gfx.msaa = 1;   /* MSAA was removed (cost performance, barely visible): always off; drop the key an older ini may still carry */
     if (GetPrivateProfileIntW(L"graficos", L"msaa", -1, ini.c_str()) != -1) WritePrivateProfileStringW(L"graficos", L"msaa", nullptr, ini.c_str());
@@ -188,8 +193,17 @@ bool mods_enabled_has_file(const char *relative);
 namespace {
 struct OptionInfo { const char *label; const char *help; int count; const char *names[6]; const int *values; };   /* values: what each choice stores (null = the index itself) */
 const int kResValues[6] = {1, 3, 4, 6, 8, 0};   /* resolucao: fator interno (0 = do monitor; ver gfx.h) */
+#ifdef __linux__
+const int kRendererValues[2] = {GFX_RENDER_SOFTWARE, GFX_RENDER_VULKAN};   /* Direct3D 11 nao existe aqui: o menu nao oferece */
+#else
+const int kRendererValues[3] = {GFX_RENDER_SOFTWARE, GFX_RENDER_D3D11, GFX_RENDER_VULKAN};
+#endif
 const OptionInfo kOptions[GFXOPT_COUNT] = {
-    {"Renderer", "Software uses the CPU. Direct3D 11 and Vulkan use the GPU.", 3, {"Software", "Direct3D 11", "Vulkan"}, nullptr},
+#ifdef __linux__
+    {"Renderer", "Software uses the CPU. Vulkan uses the GPU.", 2, {"Software", "Vulkan"}, kRendererValues},
+#else
+    {"Renderer", "Software uses the CPU. Direct3D 11 and Vulkan use the GPU.", 3, {"Software", "Direct3D 11", "Vulkan"}, kRendererValues},
+#endif
     {"Resolution", "Screen resolution, as in any PC game. 2560x1440 and 3840x2160 need the GPU.", 6, {"480x272", "1280x720", "1920x1080", "2560x1440", "3840x2160", "Monitor"}, kResValues},
     {"Textures", "Original is the plain PSP look. Enhanced is the AI upscaled package.", 2, {"Original", "Enhanced"}, nullptr},
     {"Frame rate", "60 and 120 FPS are interpolated from the original 30 (GPU). 120 needs a 120 Hz monitor.", 3, {"30 FPS", "60 FPS", "120 FPS"}, nullptr},

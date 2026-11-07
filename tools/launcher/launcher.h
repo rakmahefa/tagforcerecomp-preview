@@ -124,7 +124,7 @@ struct ToolReport {
     std::string instructions;
     bool ready() const;
 };
-ToolReport checkTools(); // runs `timeout 5 <tool> --version` for each
+ToolReport checkTools(const std::filesystem::path &source); // runs `timeout 5 <tool> --version` for each; source = payload/source or the checkout
 
 // ---------------------------------------------------------------- the build
 

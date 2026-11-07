@@ -145,7 +145,17 @@ static HWND render_window_create(void) {
 }
 /* inicia o renderizador por GPU pedido; se falhar tenta o proximo (Vulkan -> Direct3D 11 -> software). Devolve o que ficou. */
 static int start_gpu(int r) {
+#ifdef __linux__
+    /* No Direct3D 11 here. A config that asks for it (the default carried from Windows, or an
+     * ini written before) must not skip the GPU: map it to Vulkan, the equivalent that exists
+     * on Linux, and the chain ends in software. Before, the fresh-install default (D3D 11)
+     * fell straight to the software renderer - "nenhum indisponivel" in the log, GE rasterized
+     * on the CPU at the monitor-matched resolution and the window stayed black. */
+    if (r == GFX_RENDER_D3D11) r = GFX_RENDER_VULKAN;
+    for (; r != GFX_RENDER_SOFTWARE; r = GFX_RENDER_SOFTWARE) {
+#else
     for (; r != GFX_RENDER_SOFTWARE; r = (r == GFX_RENDER_VULKAN) ? GFX_RENDER_D3D11 : GFX_RENDER_SOFTWARE) {
+#endif
         HWND rw = render_window_create();
         if (rw && gpu_select(r) && gpu_init(rw)) { ge_set_gpu(true); g_gpu_gen++; fprintf(stderr, "[gpu] renderizador: %s\n", gpu_backend_name()); return r; }
         fprintf(stderr, "[gpu] %s indisponivel\n", gpu_backend_name());

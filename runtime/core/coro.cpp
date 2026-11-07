@@ -16,6 +16,13 @@
  * volatile, and signals run on the alternate stack installed per thread (shim_kern), so a
  * switch is just the six callee-saved GPRs. A new coroutine gets a frame whose return address
  * is tf_coro_tramp, with r12 = function and r13 = argument (rdi = argument at the call). */
+/* A chamada do trampolin TEM de sair com rsp alinhado a 16 bytes (SysV): a funcao da corotina -
+ * thread_entry -> psp_call -> codigo JIT - roda inteira numa pilha que nasce aqui, e o GCC usa
+ * movaps/movdqa na pilha (o psp_call empacota quatro uint32_t de g_hle_now_a num so slot de 16).
+ * Sem o alinhamento o primeiro acesso desses da #GP, o Linux entrega SIGSEGV com si_addr == 0,
+ * e o relatorio dizia "(nil)" - um ponteiro nulo que nao existia. O trampolin do Windows acerta
+ * o alinhamento de nascenca (o coro_create dele poe o quadro a top-0x40 e o sub 0x20 mantem);
+ * a porta Linux esqueceu disso. andq $-16 vale para qualquer aritmetica de coro_create. */
 asm(
     ".text\n"
     ".globl tf_coro_switch\n"
@@ -38,6 +45,7 @@ asm(
     ".globl tf_coro_tramp\n"
     "tf_coro_tramp:\n"
     "    movq %r13, %rdi\n"
+    "    andq $-16, %rsp\n"    /* antes do call: rsp % 16 == 0, como a ABI exige (a entrada chega com rsp % 16 == 8) */
     "    callq *%r12\n"
     "    int3\n"
 );

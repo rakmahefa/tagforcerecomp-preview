@@ -612,7 +612,7 @@ void LauncherApp::checkToolsAsync() {
     if (m_toolsThread.joinable())
         m_toolsThread.join();
     m_toolsThread = std::thread([this] {
-        ToolReport report = checkTools();
+        ToolReport report = checkTools(sourceRoot());
         std::lock_guard lock(m_toolsMutex);
         m_tools = std::move(report);
         m_checkingTools = false;
@@ -832,15 +832,15 @@ void LauncherApp::showPreview(Preview preview) {
     const bool missing = preview == Preview::ToolsMissing;
     add("C++ compiler", "Compiles the game", missing ? nullptr : "13.2.0");
     add("Python 3", "Copies the disc and translates the game code", "3.12.3");
-    add("Shader compiler", "Compiles the Vulkan shaders (glslc)", missing ? nullptr : "glslc 2025.2");
+    add("Shader compiler", "Recompiles the Vulkan shaders (they ship pre-compiled)", "bundled (prebuilt/gpu_spv.h)");
     add("SDL2", "Window, input and audio", missing ? nullptr : "2.30.3");
     add("FFmpeg libraries", "Play the movies and music", missing ? nullptr : "60.31.102");
     add("PNG/JPEG codecs", "Read images and textures", missing ? nullptr : "1.6.44");
     add("Vulkan", "Draws the game (or the software renderer)", missing ? nullptr : "1.3.275");
-    add("TinyCC", "Compiles the translated game code at run time", "found", true);
+    add("TinyCC", "Compiles the translated game code at run time", "bundled (prebuilt/tcc)", true);
     if (missing) {
         tools.installCommand =
-            "sudo apt install build-essential python3 pkg-config glslc bzip2 libsdl2-dev libavcodec-dev "
+            "sudo apt install build-essential python3 pkg-config bzip2 libsdl2-dev libavcodec-dev "
             "libavformat-dev libavutil-dev libswscale-dev libswresample-dev libpng-dev libjpeg-dev libvulkan-dev";
         tools.instructions = "Your distribution's packages have them all. Copy the line below into a terminal, enter "
                              "your password, and press Check again when it finishes.";
