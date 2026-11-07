@@ -80,6 +80,15 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
   address) as Windows' datatype-misalignment (`0x80000002`), and the report says so - "acesso
   ALINHADO (SSE) a endereco desalinhado: pilha do host fora dos 16 bytes da ABI" - instead of
   the old "(nil)", which sent the first diagnosis hunting a null pointer that was not there;
+- **a Linux config that asks for Direct3D 11 (the default inherited from Windows) now runs
+  Vulkan, not the software renderer**: `start_gpu` mapped the D3D 11 request straight to
+  software (the Windows chain is Vulkan -> D3D 11 -> software; entering it at D3D 11 on Linux,
+  where `gpu_select` refuses it, never tried the GPU at all - the player's first boot logged
+  "[gpu] nenhum indisponivel", rasterized the GE on the CPU at the monitor-matched resolution
+  (14 ms per frame, ~35 fps) and showed a black window). Now the D3D 11 request is translated
+  to Vulkan before the chain, `gfx_load` does the same for the saved `renderizador` key (so the
+  .ini and the Graphics menu say what really runs), and the menu on Linux offers only
+  Software / Vulkan;
 - the watchdog only counts missing frames once the scheduler starts (a 14 s JIT compile on a
   laptop is not a hang), and the `[iso] arquivos do jogo` line is logged once (the installed
   folder was opened twice: the background reader thread started twice too);
