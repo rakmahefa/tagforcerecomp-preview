@@ -21,6 +21,14 @@ time, on the player's own machine. They are carried ready-made instead:
   machine; a plain git checkout (no payload) simply builds from source as
   before.
 
+- **`fonts/`** - VL Gothic (`VL-Gothic-Regular.ttf`), the Japanese typeface of the Linux
+  runtime. In git, unlike `tcc/`: it is data, not a build product, so it rides along in the
+  payload's source archive by itself. The Windows build rasterizes MS Gothic through GDI; on
+  Linux every glyph from U+2E80 up comes from this file, which the runtime looks up beside the
+  exe (`fonts/`, then `prebuilt/fonts/`) before any system font - a distribution without a
+  usable TrueType CJK font (Arch's noto-fonts-cjk is OpenType/CFF, outlines stb_truetype
+  cannot rasterize) still shows the Japanese text. The license is beside it.
+
 A stale `prebuilt/gpu_spv.h` would silently ship old shaders: after editing
 anything under `runtime/gpu/shaders/`, regenerate it (the command above) and
 commit the result together with the shader.

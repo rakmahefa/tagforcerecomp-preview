@@ -135,6 +135,29 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
   (97.6 % of the capture); with the window claimed, 89 yellow frames blitted and 0.0 % of them
   reached the screen (the capture still shows the gradient, and the shim logged the suppression);
   released, the yellow presents come back (100.0 %). The headless game boot still ends `rc=0`;
+- **a fresh install writes its own `tagforce_recomp.ini`**: `gfx_save` only runs when an option
+  changes in game, the launcher with the Graphics page only shows while no game is installed,
+  and the Linux launcher starts the game with the data folder already given - so the player's
+  first boot ran on invisible defaults (a monitor-matched 8x internal resolution on a HiDPI
+  screen, and no DXGI on Linux to cap it) with no file to edit and no screen to change it.
+  `gfx_load` now writes the file, with every key and a one-line comment per key
+  ([geral]/[graficos]/[controles]), when it does not exist yet; the values written are the
+  defaults the game then reads back, and the in-game Graphics screen keeps updating the same
+  keys;
+- **the Japanese glyphs no longer depend on the distribution's fonts**: the runtime rasterizes
+  MS Gothic through its GDI layer, and the shim only matched `.ttf` files in a handful of
+  Debian-style directories - on Arch, where the CJK fonts are `.ttc` collections (and
+  noto-fonts-cjk is OpenType/CFF, outlines stb_truetype cannot rasterize at all), no Japanese
+  face was ever found and every glyph from U+2E80 up rendered blank (the player's "some texts
+  do not show"). The payload now carries VL Gothic (`prebuilt/fonts/`, tracked in git - it
+  rides in the source archive by itself) and the runtime looks for it beside the exe first;
+  the system search accepts `.ttc` collections (first face), walks `/usr/share/fonts` and
+  `~/.fonts` recursively when the known directories miss, skips faces without TrueType
+  outlines instead of letting them shadow a usable font, and the log names the faces it
+  picked (`[fonte] latin: ... / [fonte] CJK: ...`) so a missing font is diagnosable from a
+  distance. The Latin candidates also stop matching the italic variants first (readdir is
+  alphabetical, so "LiberationSans-BoldItalic.ttf" sorted ahead of "LiberationSans-Bold.ttf" -
+  the game's semibold text was rendering slanted);
 - the watchdog only counts missing frames once the scheduler starts (a 14 s JIT compile on a
   laptop is not a hang), and the `[iso] arquivos do jogo` line is logged once (the installed
   folder was opened twice: the background reader thread started twice too);

@@ -14,6 +14,60 @@
 GfxSettings g_gfx = {GFX_FILTER_SHARP, GFX_ASPECT_ORIGINAL, false, 1, GFX_RENDER_D3D11, 1, 1, 1, 0};   /* GPU por padrao; sem D3D11 volta ao software */
 
 static std::wstring ini_path() { return app_ini_path(); }
+/* The player's settings file, written with every key (and a comment per key) when it does not
+ * exist yet. A fresh install had nothing to edit: gfx_save only runs when an option CHANGES in
+ * game, the in-exe launcher with its Graphics page only shows while no game is installed, and
+ * the Linux launcher starts the game with the data folder already given - the player ended up
+ * with the defaults (a monitor-matched 8x internal resolution on a HiDPI screen) and no way to
+ * see or change them. The values below are the defaults gfx_load reads back. */
+static void write_default_ini(const std::wstring &ini) {
+    FILE *f = _wfopen(ini.c_str(), L"rb");
+    if (f) { fclose(f); return; }   /* already there: only the game and the player write it */
+    f = _wfopen(ini.c_str(), L"wb");
+    if (!f) return;
+#ifdef __linux__
+    const int def_renderer = GFX_RENDER_VULKAN;   /* what a fresh install really runs (a D3D 11 request is translated) */
+#else
+    const int def_renderer = GFX_RENDER_D3D11;
+#endif
+    fprintf(f,
+        "# Tag Force Recomp - player settings. The in-game Graphics screen and F11 write here\n"
+        "# too; the game reads this file when it starts (edit it with the game closed).\n"
+        "\n"
+        "[geral]\n"
+        "# iso: the last disc/folder the launcher picked. verificar_atualizacao=0 turns the\n"
+        "# update check off.\n"
+        "iso=\n"
+        "verificar_atualizacao=1\n"
+        "\n"
+        "[graficos]\n"
+        "# renderizador: 0 = Software (CPU), 1 = Direct3D 11 (Windows), 2 = Vulkan (GPU)\n"
+        "renderizador=%d\n"
+        "# resolucao: 1 = 480x272 (PSP), 3 = 1280x720, 4 = 1920x1080, 6 = 2560x1440,\n"
+        "# 8 = 3840x2160, 0 = match the monitor's height. 6 and 8 need a strong GPU.\n"
+        "resolucao=0\n"
+        "# tela: 0 = windowed, 1 = fullscreen, 2 = fullscreen borderless (in game: F11)\n"
+        "tela=0\n"
+        "# fps60: 0 = 30 FPS, 1 = 60 FPS, 2 = 120 FPS (60/120 are interpolated, need the GPU)\n"
+        "fps60=1\n"
+        "# sincronizacao: 0 = default (no tearing), 1 = VSync, 2 = lowest latency (may tear)\n"
+        "sincronizacao=0\n"
+        "# filtro: 0 = sharp pixels, 1 = smoothed, 2 = bilinear\n"
+        "filtro=%d\n"
+        "# proporcao: 0 = 16:9 (original), 1 = stretched, 2 = 4:3\n"
+        "proporcao=0\n"
+        "# estilo_cartas: 0 = TCG (printed cards), 1 = anime (needs the Enhanced textures)\n"
+        "estilo_cartas=0\n"
+        "\n"
+        "[controles]\n"
+        "# teclado_mouse_pc: 1 = keyboard/mouse in the menus. mouse_nos_menus: 1 = click the\n"
+        "# menus with the mouse.\n"
+        "teclado_mouse_pc=1\n"
+        "mouse_nos_menus=0\n",
+        def_renderer, (int)GFX_FILTER_SHARP);
+    fclose(f);
+    fprintf(stderr, "[gfx] tagforce_recomp.ini criado com as opcoes e seus valores (edite com o jogo fechado)\n");
+}
 /* Video memory of the best adapter, in MB (dedicated; for integrated GPUs a quarter of the shared system memory), and whether it is an integrated one.
  * Used to size the texture budgets and to cap the automatic resolution on weak machines. Cached; 0 when DXGI cannot tell. */
 int gfx_vram_mb(bool *integrated) {
@@ -52,6 +106,7 @@ int gfx_res_monitor(void) {
 }
 void gfx_load(void) {
     std::wstring ini = ini_path();
+    write_default_ini(ini);   /* a fresh install had no file to edit: every key, with comments */
     g_gfx.filter = (int)GetPrivateProfileIntW(L"graficos", L"filtro", g_gfx.filter, ini.c_str());
     g_gfx.aspect = (int)GetPrivateProfileIntW(L"graficos", L"proporcao", g_gfx.aspect, ini.c_str());
     if (getenv("GFX_DEBUG")) fprintf(stderr, "[gfx] ini %ls -> filtro %d\n", ini.c_str(), g_gfx.filter);
