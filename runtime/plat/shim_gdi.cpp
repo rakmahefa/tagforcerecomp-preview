@@ -2,8 +2,10 @@
  *
  * A DC draws into an ARGB8888 software canvas (a window's backing store, or the bitmap of a
  * memory DC). Shapes are plain GDI-style (no antialiasing, like Windows), text is rasterized
- * with stb_truetype from the system fonts (Segoe UI -> Liberation Sans / DejaVu Sans, MS Gothic
- * -> the CJK font of the system, with a fallback chain so every code point has a glyph).
+ * with stb_truetype from the bundled VL Gothic (the Japanese glyphs, in prebuilt/fonts/ beside
+ * the exe) and the system fonts (Segoe UI -> Liberation Sans / DejaVu Sans, MS Gothic -> the
+ * bundled font first, then the system's CJK), with a fallback chain so every code point has a
+ * glyph. .ttf and .ttc, TrueType outlines only (load_face rejects the rest).
  * StretchDIBits/SetDIBitsToDevice take the Windows 32-bpp BI_RGB layout (BGRX in memory) and
  * convert to the canvas layout; the game's own bilinear scaler (gfx.cpp) already produced the
  * exact pixels, so nearest-neighbour is all the blit needs.
@@ -21,6 +23,7 @@
 #include <stdint.h>
 #include <dirent.h>
 #include <sys/stat.h>
+#include <unistd.h>
 #include <map>
 #include <string>
 #include <vector>
@@ -94,17 +97,32 @@ static std::mutex g_fmu;
 
 static void font_dirs_init(void) {
     if (!g_font_dirs.empty()) return;
+    /* the font bundled with the game first (the payload carries source/prebuilt/fonts/, a root
+     * install keeps prebuilt/fonts/ beside the exe): the Japanese glyphs must not depend on what
+     * the distribution happens to install (Arch's noto-fonts-cjk, for one, is OpenType/CFF -
+     * outlines stb_truetype cannot rasterize at all) */
+    char exe[4096];
+    ssize_t n = readlink("/proc/self/exe", exe, sizeof exe - 1);
+    if (n > 0) {
+        exe[n] = 0;
+        if (char *sl = strrchr(exe, '/')) {
+            *sl = 0;
+            g_font_dirs.push_back(std::string(exe) + "/fonts");
+            g_font_dirs.push_back(std::string(exe) + "/prebuilt/fonts");
+        }
+    }
     const char *dirs[] = {
         "/usr/share/fonts/truetype/liberation", "/usr/share/fonts/truetype/dejavu",
-        "/usr/share/fonts/truetype/japanese", "/usr/share/fonts/truetype/chinese",
-        "/usr/share/fonts/opentype/noto", "/usr/share/fonts/truetype/noto", "/usr/share/fonts/truetype/noto-serif-sc",
-        "/usr/share/fonts/truetype/freefont", "/usr/share/fonts/truetype/libreoffice", "/usr/share/fonts/truetype/wqy",
+        "/usr/share/fonts/TTF",   /* Arch lays its fonts out flat here */
+        "/usr/share/fonts/truetype/japanese", "/usr/share/fonts/truetype/vlgothic", "/usr/share/fonts/vlgothic",
+        "/usr/share/fonts/truetype/chinese", "/usr/share/fonts/truetype/ipa", "/usr/share/fonts/ipa",
+        "/usr/share/fonts/opentype/noto", "/usr/share/fonts/noto", "/usr/share/fonts/noto-cjk", "/usr/share/fonts/noto-serif-sc",
+        "/usr/share/fonts/truetype/freefont", "/usr/share/fonts/truetype/libreoffice", "/usr/share/fonts/truetype/wqy", "/usr/share/fonts/truetype/wenquanyi",
         "/usr/share/fonts",
     };
     for (auto *d : dirs) g_font_dirs.push_back(d);
     if (const char *e = getenv("TF_FONT_DIR")) g_font_dirs.insert(g_font_dirs.begin(), e);
 }
-static bool file_readable(const char *p) { struct stat st; return stat(p, &st) == 0 && S_ISREG(st.st_mode); }
 static Face *load_face(const std::string &path) {
     std::lock_guard<std::mutex> lk(g_fmu);
     auto it = g_faces.find(path);
@@ -116,8 +134,13 @@ static Face *load_face(const std::string &path) {
         fseek(fp, 0, SEEK_END); long n = ftell(fp); fseek(fp, 0, SEEK_SET);
         if (n > 0 && n < 60 * 1024 * 1024) {
             f->data.resize((size_t)n);
-            if (fread(f->data.data(), 1, (size_t)n, fp) == (size_t)n)
-                f->ok = stbtt_InitFont(&f->info, f->data.data(), 0) != 0;
+            if (fread(f->data.data(), 1, (size_t)n, fp) == (size_t)n) {
+                /* a .ttc collection: its first face; and TrueType outlines only: a font without a
+                 * glyf table (OpenType/CFF, like Arch's noto-fonts-cjk) would "load" fine and
+                 * rasterize every glyph as a blank */
+                int off = stbtt_GetFontOffsetForIndex(f->data.data(), 0);
+                f->ok = off >= 0 && stbtt_InitFont(&f->info, f->data.data(), off) != 0 && f->info.glyf != 0;
+            }
         }
         fclose(fp);
     }
@@ -128,6 +151,35 @@ static Face *load_face(const std::string &path) {
     }
     g_faces[path] = f;
     return f;
+}
+static bool font_ext_ok(const std::string &ln) {   /* a plain font or a collection (.ttc: the first face) */
+    return ln.size() > 4 && (ln.compare(ln.size() - 4, 4, ".ttf") == 0 || ln.compare(ln.size() - 4, 4, ".ttc") == 0);
+}
+/* every .ttf/.ttc under the font trees, collected once: distributions lay them out differently
+ * (Arch: /usr/share/fonts/TTF flat, Debian: /usr/share/fonts/truetype/<package>, Fedora:
+ * per-family subfolders) and the fixed list above only knows the common spots*/
+static std::mutex g_walkmu;
+static std::vector<std::string> g_walk;
+static bool g_walked;
+static void walk_font_dir(const std::string &dir, int depth) {
+    if (depth > 4 || g_walk.size() > 8192) return;
+    DIR *dp = opendir(dir.c_str());
+    if (!dp) return;
+    struct dirent *e;
+    while ((e = readdir(dp))) {
+        std::string n = e->d_name;
+        if (n == "." || n == "..") continue;
+        std::string full = dir + "/" + n;
+        struct stat st;
+        if (stat(full.c_str(), &st) != 0) continue;
+        if (S_ISDIR(st.st_mode)) walk_font_dir(full, depth + 1);
+        else {
+            std::string ln = n;
+            for (auto &c : ln) c = (char)tolower((unsigned char)c);
+            if (font_ext_ok(ln)) g_walk.push_back(full);
+        }
+    }
+    closedir(dp);
 }
 static Face *find_face(const char *basename_lower) {
     font_dirs_init();
@@ -141,12 +193,32 @@ static Face *find_face(const char *basename_lower) {
             std::string n = e->d_name;
             std::string ln = n;
             for (auto &c : ln) c = (char)tolower((unsigned char)c);
-            if (ln.find(want) != std::string::npos && ln.size() > 4 && ln.substr(ln.size() - 4) == ".ttf") {
-                std::string full = d + "/" + n;
-                if (file_readable(full.c_str())) { closedir(dir); return load_face(full); }
+            if (ln.find(want) != std::string::npos && font_ext_ok(ln)) {
+                Face *f = load_face(d + "/" + n);
+                if (f->ok) { closedir(dir); return f; }   /* a face that cannot be used does not stop the search */
             }
         }
         closedir(dir);
+    }
+    /* not in the known directories: the walk, once (the filename still has to match) */
+    {
+        std::lock_guard<std::mutex> lk(g_walkmu);
+        if (!g_walked) {
+            g_walked = true;
+            walk_font_dir("/usr/share/fonts", 0);
+            if (const char *home = getenv("HOME")) {
+                walk_font_dir(std::string(home) + "/.fonts", 0);
+                walk_font_dir(std::string(home) + "/.local/share/fonts", 0);
+            }
+        }
+    }
+    std::vector<std::string> snap;
+    { std::lock_guard<std::mutex> lk(g_walkmu); snap = g_walk; }
+    for (auto &full : snap) {
+        std::string ln = full;
+        for (auto &c : ln) c = (char)tolower((unsigned char)c);
+        size_t sl = ln.rfind('/');
+        if (ln.substr(sl + 1).find(want) != std::string::npos) { Face *f = load_face(full); if (f->ok) return f; }
     }
     return nullptr;
 }
@@ -160,17 +232,37 @@ static Face *first_face_with(tf_hgdi_s *fo, int codepoint, int *glyph) {
     if (glyph) *glyph = 0;
     return (!fo->chain.empty() && fo->chain[0] && fo->chain[0]->ok) ? fo->chain[0] : nullptr;
 }
+static const char *face_name(Face *f) { if (!f) return "(none)"; size_t s = f->path.rfind('/'); return f->path.c_str() + (s == S::npos ? 0 : s + 1); }
 static Face *face_liberation(bool bold) {
-    Face *f = find_face(bold ? "liberationsans-bold" : "liberationsans-regular");
-    if (!f || !f->ok) f = find_face(bold ? "dejavusans-bold" : "dejavusans");
-    return (f && f->ok) ? f : nullptr;
+    static Face *cache[2]; static bool done[2], told;   /* per weight; the log line fires once, at the first font built */
+    const int slot = bold ? 1 : 0;
+    if (done[slot]) return cache[slot];
+    done[slot] = true;
+    /* the trailing dot keeps the substring match off the italic variants (readdir is alphabetical:
+     * "LiberationSans-BoldItalic.ttf" sorts before "LiberationSans-Bold.ttf") */
+    Face *f = nullptr;
+    const char *cands[6] = {};
+    if (bold) { cands[0] = "liberationsans-bold."; cands[1] = "liberationsans-bold"; cands[2] = "dejavusans-bold."; cands[3] = "notosans-bold."; cands[4] = "notosansbold"; cands[5] = "roboto-bold."; }
+    else { cands[0] = "liberationsans-regular."; cands[1] = "liberationsans-regular"; cands[2] = "dejavusans."; cands[3] = "notosans-regular."; cands[4] = "notosans"; cands[5] = "droidsans"; }
+    for (const char *c : cands) { if (!c) continue; f = find_face(c); if (f && f->ok) break; }
+    cache[slot] = (f && f->ok) ? f : nullptr;
+    if (!told) { told = true; fprintf(stderr, "[fonte] latin: %s\n", cache[slot] ? face_name(cache[slot]) : "no TrueType sans found in /usr/share/fonts"); }
+    return cache[slot];
 }
 static Face *face_cjk(void) {
-    Face *f = find_face("fonts-japanese-gothic");
-    if (!f || !f->ok) f = find_face("notosanssc-regular");
-    if (!f || !f->ok) f = find_face("notosanscjk");
-    if (!f || !f->ok) f = find_face("wenquanyi");
-    return (f && f->ok) ? f : nullptr;
+    static Face *cached; static bool done, told;
+    if (done) return cached;
+    done = true;
+    /* VL Gothic (bundled with the game) first: a real Japanese gothic, the closest to the MS
+     * Gothic the Windows build rasterizes; then what the system installed (a .ttc's first face
+     * is fine). CFF-only fonts were rejected in load_face, so they cannot shadow a usable one */
+    for (const char *cand : {"vl-gothic", "fonts-japanese-gothic", "ipag", "notosansjp", "notosanscjk", "notosanssc", "wqy", "wenquanyi", "droidsansfallback"}) {
+        Face *f = find_face(cand);
+        if (f && f->ok) { cached = f; break; }
+    }
+    if (!told) { told = true; fprintf(stderr, "[fonte] CJK: %s%s\n", face_name(cached),
+        cached ? "" : " - Japanese text would be blank (prebuilt/fonts/VL-Gothic-Regular.ttf is bundled beside the game; a system ttf-vlgothic / ttf-ipa / wqy-zenhei works too)"); }
+    return cached;
 }
 HFONT CreateFontW(int height, int, int, int, int weight, DWORD, DWORD, DWORD, DWORD, DWORD, DWORD, DWORD, DWORD, LPCWSTR face) {
     tf_hgdi_s *f = new tf_hgdi_s();
