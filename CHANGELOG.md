@@ -46,10 +46,22 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
   a guest address, a NULL prints as a native null pointer (the old `end PSP 0xffff8073...` for
   `fa - g_mem` was meaningless), the RIP is resolved to a named function of the executable
   (`-rdynamic`) or to the JIT range of a module (the linked code is mmapped by the runtime now),
-  a correct `addr2line` hint with the real load base is printed, and the native call chain above
-  the fault is listed. `GetModuleHandle(nullptr)` returns the executable's load address (it used
+  a correct `addr2line` hint with the real load base is printed, the native call chain above
+  the fault is listed, and **the syscall in flight is named with the arguments the game passed**
+  (`syscall em execucao: <lib>::<funcao>(a0..a3) ra=...`) - `psp_call` notes it before running
+  the (static, unnameable by `dladdr`) HLE body, so a crash inside one no longer needs
+  `addr2line` or a re-run with `HLE_TRACE=1` (the first full-data boot crashed exactly there:
+  a native NULL with `RIP <sem simbolo>+0xda671` right under `psp_call`).
+  `GetModuleHandle(nullptr)` returns the executable's load address (it used
   to return a `dlopen` handle, so `exe+offset` was garbage); `TF_CRASH_TEST=1` triggers a
   controlled crash to check all of this;
+- blocking syscalls (sema/event-flag/vblank waits, delays, thread waits, FPL allocation) called
+  without a current thread - a game routine run in interrupt context (the vblank of the
+  scheduler's idle point) or a native module init - return the PSP's context error
+  (`0x8002019a`) and log which call it was, instead of dereferencing the null current-thread
+  pointer (that was a `(nil)` crash with the RIP inside the syscall's body); the checks that
+  can be satisfied without blocking (a sema already signalled, event-flag bits already set)
+  still succeed;
 - the watchdog only counts missing frames once the scheduler starts (a 14 s JIT compile on a
   laptop is not a hang), and the `[iso] arquivos do jogo` line is logged once (the installed
   folder was opened twice: the background reader thread started twice too);
