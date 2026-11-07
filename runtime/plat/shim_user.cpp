@@ -953,8 +953,17 @@ static void wnd_present(Wnd *w) {
     Wnd *t = top_level_wnd(w);
     if (!t || !t->pres || !t->pres->canvas || !t->win) return;
     Pres *p = t->pres;
+    /* one renderer per window, but more than one thread can reach a present: the game thread
+     * (ReleaseDC below), the message pumps of the UI thread (EndPaint, UpdateWindow)... SDL
+     * renderers are not thread-safe */
+    static std::mutex mu;
+    std::lock_guard<std::mutex> lk(mu);
     if (!p->ren) {
-        p->ren = SDL_CreateRenderer(t->win, -1, SDL_RENDERER_ACCELERATED | SDL_RENDERER_PRESENTVSYNC);
+        /* no PRESENTVSYNC: on Windows a GetDC/EndPaint draw reaches the screen at once and the
+         * game's own limiter does the pacing (the software renderer's frame goes out through
+         * here every quadro); a vsynced present would block the game thread on the compositor
+         * (up to a whole refresh per frame - or forever on an occluded Wayland window) */
+        p->ren = SDL_CreateRenderer(t->win, -1, SDL_RENDERER_ACCELERATED);
         if (!p->ren) p->ren = SDL_CreateRenderer(t->win, -1, SDL_RENDERER_SOFTWARE);
     }
     if (!p->ren) return;
@@ -977,7 +986,18 @@ static void wnd_present(Wnd *w) {
 extern HDC tf_gdi_wnd_dc(Wnd *w);
 
 HDC GetDC(HWND h) { Wnd *w = find_wnd(h); return w ? tf_gdi_wnd_dc(w) : nullptr; }
-int ReleaseDC(HWND, HDC dc) { extern void tf_gdi_free_dc(HDC); tf_gdi_free_dc(dc); return 1; }
+int ReleaseDC(HWND h, HDC dc) {
+    extern void tf_gdi_free_dc(HDC);
+    tf_gdi_free_dc(dc);
+    /* On Windows a GetDC/ReleaseDC draw is on the screen at once; here the GDI draws into the
+     * window's canvas and only a present pushes it to the SDL window. The game's per-frame
+     * blit (display.cpp's software renderer) uses exactly this pair - EndPaint/UpdateWindow
+     * never ran for it, so the window stayed black - so a draw that touched the canvas is
+     * presented here, like EndPaint does for WM_PAINT */
+    Wnd *w = find_wnd(h);
+    if (w) { Wnd *t = top_level_wnd(w); if (t && t->pres && t->pres->touched) wnd_present(w); }
+    return 1;
+}
 HDC BeginPaint(HWND h, PAINTSTRUCT *ps) {
     Wnd *w = find_wnd(h);
     if (!w) return nullptr;
@@ -996,20 +1016,26 @@ BOOL EndPaint(HWND h, const PAINTSTRUCT *ps) {
 
 /* ------------------------------------------------------------------ DCs bound to a window's buffer */
 extern HDC tf_gdi_dc_for_canvas(Canvas *c, int orgx, int orgy);   /* shim_gdi.cpp */
+extern void tf_gdi_dc_set_touched(HDC dc, bool *touched);         /* shim_gdi.cpp: GDI draws mark the window */
 HDC tf_gdi_wnd_dc(Wnd *w) {
     Wnd *t = top_level_wnd(w);
     if (!t || !t->pres || !t->pres->canvas) return nullptr;
     LONG ox = 0, oy = 0;
     if (w != t) point_to_top(w, 0, 0, &ox, &oy);
-    return tf_gdi_dc_for_canvas(t->pres->canvas, (int)ox, (int)oy);
+    HDC dc = tf_gdi_dc_for_canvas(t->pres->canvas, (int)ox, (int)oy);
+    if (dc) tf_gdi_dc_set_touched(dc, &t->pres->touched);
+    return dc;
 }
 /*owner-draw DC: the PARENT's buffer, coordinates already parent-relative (DRAWITEMSTRUCT::rcItem)*/
 HDC tf_gdi_ctrl_dc(Wnd *b) {
     Wnd *p = find_wnd(b->parent);
     Wnd *t = p ? top_level_wnd(p) : top_level_wnd(b);
     if (!t || !t->pres || !t->pres->canvas) return nullptr;
-    if (p && p != t) { LONG ox, oy; point_to_top(p, 0, 0, &ox, &oy); return tf_gdi_dc_for_canvas(t->pres->canvas, (int)ox, (int)oy); }
-    return tf_gdi_dc_for_canvas(t->pres->canvas, 0, 0);
+    HDC dc;
+    if (p && p != t) { LONG ox, oy; point_to_top(p, 0, 0, &ox, &oy); dc = tf_gdi_dc_for_canvas(t->pres->canvas, (int)ox, (int)oy); }
+    else dc = tf_gdi_dc_for_canvas(t->pres->canvas, 0, 0);
+    if (dc) tf_gdi_dc_set_touched(dc, &t->pres->touched);
+    return dc;
 }
 
 /* ------------------------------------------------------------------ default look of the built-in controls */
@@ -1113,6 +1139,26 @@ extern "C" int tf_shim_x11_window(HWND h, void **display, unsigned long *xid) {
     return 1;
 #else
     (void)display; (void)xid;
+    return 0;
+#endif
+}
+
+/*the Wayland handles behind a shim HWND (the Vulkan backend builds its Wayland surface from
+ * them when SDL gave the window to the compositor natively: no XWayland, or SDL_VIDEODRIVER=wayland)*/
+extern "C" int tf_shim_wl_window(HWND h, void **display, void **surface) {
+    Wnd *w = find_wnd(h);
+    while (w && w->parent) w = find_wnd(w->parent);
+    if (!w || !w->win) return 0;
+    SDL_SysWMinfo info{};
+    SDL_VERSION(&info.version);
+    if (!SDL_GetWindowWMInfo(w->win, &info)) return 0;
+#ifdef SDL_VIDEO_DRIVER_WAYLAND
+    if (info.subsystem != SDL_SYSWM_WAYLAND) return 0;
+    if (display) *display = (void *)info.info.wl.display;
+    if (surface) *surface = (void *)info.info.wl.surface;
+    return 1;
+#else
+    (void)display; (void)surface;
     return 0;
 #endif
 }

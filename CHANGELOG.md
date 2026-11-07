@@ -89,6 +89,30 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
   to Vulkan before the chain, `gfx_load` does the same for the saved `renderizador` key (so the
   .ini and the Graphics menu say what really runs), and the menu on Linux offers only
   Software / Vulkan;
+- **the Vulkan surface is a Wayland surface when SDL gave the window to the compositor
+  natively** (a Wayland session without XWayland, or `SDL_VIDEODRIVER=wayland`): the port only
+  built an Xlib surface from the SDL window's X11 handle, so on the player's Wayland desktop
+  `tf_shim_x11_window` found no handle, the backend printed "falling back to the software
+  renderer", and the game ran GE on the CPU with a black window (the same signature as the
+  config bug above: ~14-21 ms of GE per frame, zero GPU textures, 27-34 ms frames). The window
+  is now asked for both handles: X11 first (XWayland, unchanged), then the `wl_display` /
+  `wl_surface` pair for a `VkWaylandSurfaceKHR` (opaque pointers straight from
+  `SDL_GetWindowWMInfo` - no wayland-client headers at build time, no new link dependency).
+  The instance, in turn, no longer asks for a fixed extension list: the WSI extensions the
+  loader actually enumerates are the ones enabled (a stack without the requested names used to
+  fail `vkCreateInstance` itself with -9 - a machine with no ICD at all did exactly that);
+- **the software renderer's window no longer stays black on Linux**: a GDI draw lands on the
+  window's backing canvas, but only a *present* pushes that canvas to the SDL window, and the
+  game's per-frame blit paints through `GetDC` / `ReleaseDC` - a path that never presented
+  (the window DCs did not even mark the canvas as touched, so `EndPaint` skipped too). The
+  last-resort renderer drew every frame and showed nothing; reproduced standalone under Xvfb
+  with exactly the shim calls of `display_present` (417 frames blitted, a screenshot 0 %
+  non-black). Now a `ReleaseDC` whose draw touched the canvas presents it, like `EndPaint`
+  does for `WM_PAINT`, and the per-window SDL renderer presents without `SDL_RENDERER_PRESENTVSYNC`
+  (on Windows a `GetDC` draw is on the screen at once and the game's own limiter does the
+  pacing; a vsynced present would block the game thread on the compositor, up to a whole
+  refresh per frame - or forever on an occluded Wayland window). With the fix the same
+  standalone test shows the frame: 100 % non-black;
 - the watchdog only counts missing frames once the scheduler starts (a 14 s JIT compile on a
   laptop is not a hang), and the `[iso] arquivos do jogo` line is logged once (the installed
   folder was opened twice: the background reader thread started twice too);

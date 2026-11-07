@@ -1084,6 +1084,9 @@ ULONG RemoveVectoredExceptionHandler(PVECTORED_EXCEPTION_HANDLER);
 #ifdef __linux__
 /*the X11 handles behind a shim HWND (gpu_vulkan creates its Xlib surface from them)*/
 int tf_shim_x11_window(HWND h, void **display, unsigned long *xid);
+/*the Wayland handles behind a shim HWND (gpu_vulkan creates its Wayland surface from them when
+ * SDL gave the window to the compositor natively: no XWayland, or SDL_VIDEODRIVER=wayland)*/
+int tf_shim_wl_window(HWND h, void **display, void **surface);
 #endif
 DWORD XInputGetState(DWORD idx, XINPUT_STATE *state);
 DWORD XInputGetCapabilities(DWORD idx, DWORD flags, XINPUT_CAPABILITIES *caps);

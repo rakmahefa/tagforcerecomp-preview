@@ -77,6 +77,7 @@ HDC tf_gdi_dc_for_canvas(Canvas *c, int orgx, int orgy) {
     dc->clip = {0, 0, c->w, c->h};
     return (HDC)dc;
 }
+void tf_gdi_dc_set_touched(HDC h, bool *touched) { if (h) DC(h)->touched = touched; }   /* window DCs: a GDI draw marks the window for present */
 void tf_gdi_free_dc(HDC h) { delete DC(h); }
 
 /* ------------------------------------------------------------------ fonts (stb_truetype) */

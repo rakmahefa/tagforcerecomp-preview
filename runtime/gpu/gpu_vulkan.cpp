@@ -8,10 +8,15 @@
  * - uma unica submissao por quadro (apresentacao), salvo leituras sincronas (comparacao com o nativo). */
 #define VK_NO_PROTOTYPES
 #ifdef __linux__
-/* the Vulkan surface is an Xlib surface (through the SDL window's X11 handle; XWayland included).
- * SDL2 >= 2.24 tied its own Vulkan helpers to SDL_WINDOW_VULKAN windows, so the shim hands out
- * the Display* and the Window id instead (tf_shim_x11_window, shim_user.cpp). */
+/* the Vulkan surface is an Xlib surface when the SDL window runs on X11 (XWayland included) and
+ * a Wayland surface when SDL gave the window to the compositor natively (SDL2 >= 2.30 prefers
+ * that on a Wayland session without XWayland, and SDL_VIDEODRIVER=wayland forces it). Both
+ * handles are opaque pointers: no X11 or wayland-client headers at compile time, no link
+ * dependency. SDL2 >= 2.24 tied its own Vulkan helpers to SDL_WINDOW_VULKAN windows, so the
+ * shim hands out the Display and Window id, or the wl_display and wl_surface, instead
+ * (tf_shim_x11_window and tf_shim_wl_window, shim_user.cpp). */
 #define VK_USE_PLATFORM_XLIB_KHR
+#define VK_USE_PLATFORM_WAYLAND_KHR
 #else
 #define VK_USE_PLATFORM_WIN32_KHR
 #endif
@@ -37,7 +42,7 @@ typedef void *PFN_vkCreateWin32SurfaceKHR;   /* the X-macro list keeps the Windo
 /* ------------------------------------------------------------------ funcoes do Vulkan */
 #define VK_GLOBAL_FUNCS(X) X(vkCreateInstance) X(vkEnumerateInstanceExtensionProperties)
 #ifdef __linux__
-#define TF_VK_SURFACE_CREATE X(vkCreateXlibSurfaceKHR)
+#define TF_VK_SURFACE_CREATE X(vkCreateXlibSurfaceKHR) X(vkCreateWaylandSurfaceKHR)
 #else
 #define TF_VK_SURFACE_CREATE X(vkCreateWin32SurfaceKHR)
 #endif
@@ -920,9 +925,19 @@ static bool ensure_swap(void) {
     if (!g_surf) {
 #ifdef __linux__
         void *dpy = nullptr; unsigned long xid = 0;
-        if (!tf_shim_x11_window(g_hwnd, &dpy, &xid)) { fprintf(stderr, "[vulkan] the window has no X11 handle (Wayland native?); falling back to the software renderer\n"); return false; }
-        VkXlibSurfaceCreateInfoKHR ci = {VK_STRUCTURE_TYPE_XLIB_SURFACE_CREATE_INFO_KHR}; ci.dpy = (Display *)dpy; ci.window = (Window)xid;
-        CHK(vkCreateXlibSurfaceKHR(g_inst, &ci, nullptr, &g_surf));
+        if (tf_shim_x11_window(g_hwnd, &dpy, &xid)) {
+            if (!vkCreateXlibSurfaceKHR) { fprintf(stderr, "[vulkan] the loader has no VK_KHR_xlib_surface; falling back to the software renderer\n"); return false; }
+            VkXlibSurfaceCreateInfoKHR ci = {VK_STRUCTURE_TYPE_XLIB_SURFACE_CREATE_INFO_KHR}; ci.dpy = (Display *)dpy; ci.window = (Window)xid;
+            CHK(vkCreateXlibSurfaceKHR(g_inst, &ci, nullptr, &g_surf));
+        } else {
+            /* a native Wayland window (no XWayland, or SDL_VIDEODRIVER=wayland): the same
+             * surface, from the wl_display/wl_surface the shim dug out of SDL */
+            void *wl_dpy = nullptr, *wl_surf = nullptr;
+            if (!tf_shim_wl_window(g_hwnd, &wl_dpy, &wl_surf)) { fprintf(stderr, "[vulkan] the window has neither an X11 nor a Wayland handle; falling back to the software renderer\n"); return false; }
+            if (!vkCreateWaylandSurfaceKHR) { fprintf(stderr, "[vulkan] the loader has no VK_KHR_wayland_surface; falling back to the software renderer\n"); return false; }
+            VkWaylandSurfaceCreateInfoKHR ci = {VK_STRUCTURE_TYPE_WAYLAND_SURFACE_CREATE_INFO_KHR}; ci.display = (struct wl_display *)wl_dpy; ci.surface = (struct wl_surface *)wl_surf;
+            CHK(vkCreateWaylandSurfaceKHR(g_inst, &ci, nullptr, &g_surf));
+        }
 #else
         VkWin32SurfaceCreateInfoKHR ci = {VK_STRUCTURE_TYPE_WIN32_SURFACE_CREATE_INFO_KHR}; ci.hinstance = GetModuleHandleA(nullptr); ci.hwnd = g_hwnd;
         CHK(vkCreateWin32SurfaceKHR(g_inst, &ci, nullptr, &g_surf));
@@ -1061,12 +1076,21 @@ static bool load_lib(void) {
 }
 static bool build_device(void) {
     VkApplicationInfo ai = {VK_STRUCTURE_TYPE_APPLICATION_INFO}; ai.pApplicationName = "Tag Force Recomp"; ai.apiVersion = VK_API_VERSION_1_3;
+    /* instance extensions: only the WSI ones this loader actually has. The fixed list used to
+     * ask for the Xlib surface unconditionally; on a machine whose Vulkan stack reports another
+     * set (a loader without an ICD - vkCreateInstance itself failed with -9 - or one without the
+     * Wayland WSI) the instance never came up and the game fell to the software renderer. */
+    std::vector<VkExtensionProperties> avail;
+    { uint32_t ne = 0; if (vkEnumerateInstanceExtensionProperties(nullptr, &ne, nullptr) == VK_SUCCESS && ne) { avail.resize(ne); vkEnumerateInstanceExtensionProperties(nullptr, &ne, avail.data()); } }
+    auto has_ext = [&](const char *n) { for (auto &e : avail) if (!strcmp(e.extensionName, n)) return true; return false; };
+    std::vector<const char *> exts;
+    for (const char *n : {"VK_KHR_surface"}) if (has_ext(n)) exts.push_back(n);
 #ifdef __linux__
-    const char *iext[] = {"VK_KHR_surface", "VK_KHR_xlib_surface"};
-    std::vector<const char *> exts(iext, iext + 2);
+    for (const char *n : {"VK_KHR_xlib_surface", "VK_KHR_wayland_surface"}) if (has_ext(n)) exts.push_back(n);
+    if (exts.size() < 2) { fprintf(stderr, "[vulkan] the loader has no Xlib/Wayland surface extension (found %zu)\n", exts.size()); return false; }
 #else
-    const char *iext[] = {"VK_KHR_surface", "VK_KHR_win32_surface"};
-    std::vector<const char *> exts(iext, iext + 2);
+    for (const char *n : {"VK_KHR_win32_surface"}) if (has_ext(n)) exts.push_back(n);
+    if (exts.size() < 2) { fprintf(stderr, "[vulkan] the loader has no Win32 surface extension (found %zu)\n", exts.size()); return false; }
 #endif
     VkInstanceCreateInfo ic = {VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO}; ic.pApplicationInfo = &ai; ic.enabledExtensionCount = (uint32_t)exts.size(); ic.ppEnabledExtensionNames = exts.data();
     CHK(vkCreateInstance(&ic, nullptr, &g_inst));
