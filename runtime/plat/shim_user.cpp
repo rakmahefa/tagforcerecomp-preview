@@ -43,6 +43,7 @@ struct Pres {                                           /* window presentation (
     Canvas *canvas = nullptr;                           /* the window's backing store (0xAARRGGBB) */
     int w = 0, h = 0;
     bool touched = false;                               /* a GDI op drew since the last present */
+    bool vulkan_owns = false;                           /* the Vulkan backend owns the window's native surface: the SDL present path stays off (Wayland: one producer per wl_surface) */
 };
 
 struct Wnd {
@@ -949,6 +950,8 @@ static void pres_alloc(Wnd *w) {
     w->pres->w = w->w; w->pres->h = w->h;
     w->pres->touched = true;
 }
+static std::mutex g_ren_mu;   /* the per-window SDL renderer is reached from several threads: the presents below, and the Vulkan handoff (tf_shim_wnd_set_vulkan) */
+
 static void wnd_present(Wnd *w) {
     Wnd *t = top_level_wnd(w);
     if (!t || !t->pres || !t->pres->canvas || !t->win) return;
@@ -956,8 +959,18 @@ static void wnd_present(Wnd *w) {
     /* one renderer per window, but more than one thread can reach a present: the game thread
      * (ReleaseDC below), the message pumps of the UI thread (EndPaint, UpdateWindow)... SDL
      * renderers are not thread-safe */
-    static std::mutex mu;
-    std::lock_guard<std::mutex> lk(mu);
+    std::lock_guard<std::mutex> lk(g_ren_mu);
+    /* a window the Vulkan backend presents to (a native Wayland window) must not get SDL/GDI
+     * buffer commits as well: one producer per wl_surface, and a buffer commit without an
+     * acquire point under linux-drm-syncobj-v1 (the explicit-sync protocol Mesa's WSI wraps the
+     * surface with) is a fatal protocol error - the compositor kills the connection
+     * ("wp_linux_drm_syncobj_surface_v1: error 4: explicit sync is used, but no acquire point
+     * is set"). The game frame and the overlay go out through the swapchain instead */
+    if (p->vulkan_owns) {
+        static int told;
+        if (told++ < 3) fprintf(stderr, "[shim] GDI draw on the Vulkan window: not presented (the swapchain owns the surface)\n");
+        return;
+    }
     if (!p->ren) {
         /* no PRESENTVSYNC: on Windows a GetDC/EndPaint draw reaches the screen at once and the
          * game's own limiter does the pacing (the software renderer's frame goes out through
@@ -1161,6 +1174,26 @@ extern "C" int tf_shim_wl_window(HWND h, void **display, void **surface) {
     (void)display; (void)surface;
     return 0;
 #endif
+}
+
+/*the Vulkan backend claims the window (on = it built a Wayland Vulkan surface on it, and Mesa's
+ * WSI will wrap the wl_surface with the explicit-sync protocol when the compositor offers it) or
+ * releases it (off): while it owns the window the shim's present path stays off (see wnd_present)
+ * - Wayland allows one buffer producer per surface*/
+extern "C" void tf_shim_wnd_set_vulkan(HWND h, int on) {
+    Wnd *w = find_wnd(h);
+    if (!w) return;
+    Wnd *t = top_level_wnd(w);
+    if (!t || !t->pres) return;
+    std::lock_guard<std::mutex> lk(g_ren_mu);
+    if (on) {
+        if (t->pres->vulkan_owns) return;
+        t->pres->vulkan_owns = true;
+        /* drop the SDL renderer, if one existed before Vulkan took the window: its EGL window
+         * would be a second buffer producer on the same surface */
+        if (t->pres->tex) { SDL_DestroyTexture(t->pres->tex); t->pres->tex = nullptr; }
+        if (t->pres->ren) { SDL_DestroyRenderer(t->pres->ren); t->pres->ren = nullptr; }
+    } else t->pres->vulkan_owns = false;
 }
 
 /*screen size for the log (shim_kern's EnumDisplaySettingsW)*/

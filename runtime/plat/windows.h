@@ -1087,6 +1087,11 @@ int tf_shim_x11_window(HWND h, void **display, unsigned long *xid);
 /*the Wayland handles behind a shim HWND (gpu_vulkan creates its Wayland surface from them when
  * SDL gave the window to the compositor natively: no XWayland, or SDL_VIDEODRIVER=wayland)*/
 int tf_shim_wl_window(HWND h, void **display, void **surface);
+/*tells the shim whether the Vulkan backend owns this window's native surface (on = it created a
+ * Wayland Vulkan surface on it): while it does, the shim's GDI present path must not commit
+ * buffers to the same wl_surface - one producer per surface, and a commit without an acquire
+ * point under linux-drm-syncobj-v1 (the explicit-sync protocol Mesa's WSI uses) is fatal*/
+void tf_shim_wnd_set_vulkan(HWND h, int on);
 #endif
 DWORD XInputGetState(DWORD idx, XINPUT_STATE *state);
 DWORD XInputGetCapabilities(DWORD idx, DWORD flags, XINPUT_CAPABILITIES *caps);

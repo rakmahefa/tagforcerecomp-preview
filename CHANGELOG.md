@@ -113,6 +113,28 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
   pacing; a vsynced present would block the game thread on the compositor, up to a whole
   refresh per frame - or forever on an occluded Wayland window). With the fix the same
   standalone test shows the frame: 100 % non-black;
+- **a window the Vulkan backend owns gets no SDL presents** (native Wayland): the first native
+  Wayland boot died seconds after the game window came up, the compositor closing the connection -
+  `wp_linux_drm_syncobj_surface_v1#62: error 4: explicit sync is used, but no acquire point is
+  set`, then `ERROR: Wayland display connection closed by server (fatal)`. The Wayland surface fix
+  put the swapchain on the SDL window's `wl_surface`, and Mesa's WSI wraps that surface with
+  `linux-drm-syncobj-v1` as soon as the compositor offers explicit sync (KWin does); from then on
+  the surface takes exactly one buffer producer, and every buffer commit must carry an acquire
+  point. But the shim's GDI present path (the fix above: an SDL renderer behind
+  `EndPaint`/`ReleaseDC`/`UpdateWindow`) was still committing the window canvas to the same
+  surface - a `WM_PAINT` during the game's boot paints the shadow frame - and SDL2 knows nothing
+  of explicit sync, so its commit is a protocol violation the compositor answers by killing the
+  connection. The Vulkan backend now claims the window (`tf_shim_wnd_set_vulkan`) when it creates
+  the Wayland surface and releases it in `destroy_all` (the window can go back to GDI); while a
+  window is claimed, `wnd_present` stands down (logged, rate-limited, and the SDL renderer it may
+  have created is dropped - its EGL window would be a second producer), because the game frame and
+  the overlay already go out through the swapchain, and on Wayland there are no exposures to
+  repaint for. The software renderer, the launcher and the message boxes are untouched (their
+  windows are never claimed), and X11 windows keep today's behavior. Verified standalone under
+  Xvfb with the shim's exact present calls in three phases: the gradient blit reaches the screen
+  (97.6 % of the capture); with the window claimed, 89 yellow frames blitted and 0.0 % of them
+  reached the screen (the capture still shows the gradient, and the shim logged the suppression);
+  released, the yellow presents come back (100.0 %). The headless game boot still ends `rc=0`;
 - the watchdog only counts missing frames once the scheduler starts (a 14 s JIT compile on a
   laptop is not a hang), and the `[iso] arquivos do jogo` line is logged once (the installed
   folder was opened twice: the background reader thread started twice too);

@@ -937,6 +937,12 @@ static bool ensure_swap(void) {
             if (!vkCreateWaylandSurfaceKHR) { fprintf(stderr, "[vulkan] the loader has no VK_KHR_wayland_surface; falling back to the software renderer\n"); return false; }
             VkWaylandSurfaceCreateInfoKHR ci = {VK_STRUCTURE_TYPE_WAYLAND_SURFACE_CREATE_INFO_KHR}; ci.display = (struct wl_display *)wl_dpy; ci.surface = (struct wl_surface *)wl_surf;
             CHK(vkCreateWaylandSurfaceKHR(g_inst, &ci, nullptr, &g_surf));
+            /* from here the swapchain's WSI (Mesa) owns this wl_surface - it wraps it with
+             * wp_linux_drm_syncobj_surface_v1 when the compositor offers explicit sync - so the
+             * shim must stop presenting GDI content to the same surface: a buffer commit without
+             * an acquire point is a fatal protocol error ("...error 4: explicit sync is used,
+             * but no acquire point is set"). Released back in destroy_all */
+            tf_shim_wnd_set_vulkan(g_hwnd, 1);
         }
 #else
         VkWin32SurfaceCreateInfoKHR ci = {VK_STRUCTURE_TYPE_WIN32_SURFACE_CREATE_INFO_KHR}; ci.hinstance = GetModuleHandleA(nullptr); ci.hwnd = g_hwnd;
@@ -1060,7 +1066,12 @@ static void destroy_all(void) {
     if (g_plA) vkDestroyPipelineLayout(g_dev, g_plA, nullptr); if (g_plB) vkDestroyPipelineLayout(g_dev, g_plB, nullptr); g_plA = g_plB = VK_NULL_HANDLE;
     if (g_lay1) vkDestroyDescriptorSetLayout(g_dev, g_lay1, nullptr); if (g_lay2) vkDestroyDescriptorSetLayout(g_dev, g_lay2, nullptr); if (g_laySamp) vkDestroyDescriptorSetLayout(g_dev, g_laySamp, nullptr);
     g_lay1 = g_lay2 = g_laySamp = VK_NULL_HANDLE;
-    if (g_surf) { vkDestroySurfaceKHR(g_inst, g_surf, nullptr); g_surf = VK_NULL_HANDLE; }
+    if (g_surf) {
+#ifdef __linux__
+        tf_shim_wnd_set_vulkan(g_hwnd, 0);   /* the window goes back to the shim (software renderer, launcher repaints) */
+#endif
+        vkDestroySurfaceKHR(g_inst, g_surf, nullptr); g_surf = VK_NULL_HANDLE;
+    }
     vkDestroyDevice(g_dev, nullptr); g_dev = VK_NULL_HANDLE;
     if (g_inst) { vkDestroyInstance(g_inst, nullptr); g_inst = VK_NULL_HANDLE; }
     g_inited = false; g_allocs = 0; g_pend = Pend(); g_inRender = false; g_curFb = -1; g_cur = 0;
