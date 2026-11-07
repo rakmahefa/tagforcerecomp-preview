@@ -56,7 +56,13 @@ static LONG WINAPI crash_handler(EXCEPTION_POINTERS *ep) {
 #ifdef __linux__
     /* An access inside the 1 GiB PSP window is a guest address; anything else is a HOST pointer.
      * The old print of (fa - g_mem) turned NULL into 0xffff8073d4000000, which told nothing. */
-    if (g_mem && fa >= g_mem && fa < g_mem + 0x40000000u)
+    if (ep->ExceptionRecord->ExceptionCode == EXCEPTION_DATATYPE_MISALIGNMENT)
+        /* a #GP: an aligned SSE access (movaps/movdqa) to an unaligned address - on this code that
+         * is a host stack out of the ABI's 16-byte alignment (coroutine trampoline / JIT call), not
+         * a game pointer and not a null: Linux delivers it as SIGSEGV with si_addr == 0, which used
+         * to print as "(nil)" and sent the first boot crash hunting a null that did not exist */
+        fprintf(stderr, "\n[CRASH] excecao 0x%08lx, acesso ALINHADO (SSE) a endereco desalinhado: pilha do host fora dos 16 bytes da ABI (corotina ou chamada do JIT)\n", ep->ExceptionRecord->ExceptionCode);
+    else if (g_mem && fa >= g_mem && fa < g_mem + 0x40000000u)
         fprintf(stderr, "\n[CRASH] excecao 0x%08lx, acesso em %p = endereco PSP 0x%08x\n", ep->ExceptionRecord->ExceptionCode, (void *)fa, (uint32_t)(fa - g_mem));
     else if (!fa)
         fprintf(stderr, "\n[CRASH] excecao 0x%08lx, acesso em (nil): ponteiro NATIVO nulo (codigo do runtime/HLE, nao um endereco do jogo)\n", ep->ExceptionRecord->ExceptionCode);

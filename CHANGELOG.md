@@ -62,6 +62,24 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
   pointer (that was a `(nil)` crash with the RIP inside the syscall's body); the checks that
   can be satisfied without blocking (a sema already signalled, event-flag bits already set)
   still succeed;
+- **the Linux coroutine trampoline aligns the stack to 16 bytes before calling the thread
+  function** (`andq $-16`): the whole emulated thread - `thread_entry` -> `psp_call` ->
+  recompiled code - runs on a stack born in that trampoline, and the SysV ABI requires
+  `rsp % 16 == 0` at every call. The Windows switch was born aligned (its `coro_create`
+  places the frame at `top - 0x40` and the trampoline's `sub 0x20` keeps it); the Linux port
+  wrote a new minimal trampoline and forgot the invariant, so every frame on a coroutine stack
+  sat 8 bytes off. Nothing noticed until `psp_call` began packing the four `g_hle_now_a`
+  values into one 16-byte slot: the compiler's `movaps` then took a #GP, Linux delivers that
+  as `SIGSEGV` with `si_addr == 0`, and the crash report printed a *native null pointer that
+  never existed* - the player's second boot died exactly there (`psp_call+0x1be`, right after
+  BOOT loaded, first import call of the entry). Reproduced standalone with a one-function
+  module whose entry calls a bound import stub: same `(nil)`, same RIP class, same registers;
+  with the alignment it runs to `todas as threads terminaram (rc=0)`;
+- a #GP no longer masquerades as a null dereference: the signal shim tags `SIGSEGV` with
+  `si_code == SI_KERNEL` and `si_addr == 0` (a misaligned `movaps`/`movdqa`, or a non-canonical
+  address) as Windows' datatype-misalignment (`0x80000002`), and the report says so - "acesso
+  ALINHADO (SSE) a endereco desalinhado: pilha do host fora dos 16 bytes da ABI" - instead of
+  the old "(nil)", which sent the first diagnosis hunting a null pointer that was not there;
 - the watchdog only counts missing frames once the scheduler starts (a 14 s JIT compile on a
   laptop is not a hang), and the `[iso] arquivos do jogo` line is logged once (the installed
   folder was opened twice: the background reader thread started twice too);

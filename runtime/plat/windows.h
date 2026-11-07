@@ -593,6 +593,7 @@ typedef struct _XINPUT_CAPABILITIES { BYTE Type, SubType, Flags; XINPUT_GAMEPAD 
 #define EXCEPTION_CONTINUE_EXECUTION (-1)
 #define EXCEPTION_EXECUTE_HANDLER 1
 #define EXCEPTION_ACCESS_VIOLATION 0xC0000005
+#define EXCEPTION_DATATYPE_MISALIGNMENT 0x80000002
 #define EXCEPTION_INT_DIVIDE_BY_ZERO 0xC0000094
 typedef struct _EXCEPTION_RECORD { UINT ExceptionCode; UINT ExceptionFlags; struct _EXCEPTION_RECORD *ExceptionRecord; LPVOID ExceptionAddress; UINT NumberParameters; ULONG_PTR ExceptionInformation[2]; } EXCEPTION_RECORD;
 typedef struct _CONTEXT { DWORD64 Rip; DWORD ContextFlags; } CONTEXT;   /* the fields the runtime reads (sampling profiler) */
